@@ -21,7 +21,7 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     layer l = {0};//初始化层
     l.type = REGION;//说明这是 REGION 层
 
-    l.n = n;//一个 cell 提出 n 个box
+    l.n = n;//一个 cell 预测 n 个box
     l.batch = batch;
     l.h = h;//图片被分为多少个cell=最后特征图大小->例如：13*13，l.h=l.w=13
     l.w = w;
@@ -31,12 +31,13 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     l.out_c = l.c;
     l.classes = classes;//有多少物体类别
     l.coords = coords;
-    l.cost = calloc(1, sizeof(float));//calloc(n,size):在内存的动态存储区中分配n个长度为size的连续空间，函数返回一个指向分配起始地址的指针
+    l.cost = calloc(1, sizeof(float));//< 目标函数值，为单精度浮点型指针，calloc(n,size):在内存的动态存储区中分配n个长度为size的连续空间，函数返回一个指向分配起始地址的指针
     l.biases = calloc(n*2, sizeof(float));
     l.bias_updates = calloc(n*2, sizeof(float));
     l.outputs = h*w*n*(classes + coords + 1);//输出 feature map 大小,e.g. whole boxes 13*13*5*(20+4+1) 
     l.inputs = l.outputs;
-    l.truths = 30*(l.coords + 1);// 一张图片含有的truth box参数的个数（30表示一张图片最多有30个ground truth box，写死的）
+    l.truths = 30*(l.coords + 1);// 一张图片含有的truth box参数的个数（30表示一张图片最多有30个ground truth box，写死的，实际上每张图片可能
+	//并没有30个真实矩形框，也能没有这么多参数，但为了保持一致性，还是会留着这么大的存储空间，只是其中的值为空而已.）
     l.delta = calloc(batch*l.outputs, sizeof(float));//batch*outputs
     l.output = calloc(batch*l.outputs, sizeof(float));
     int i;
@@ -235,6 +236,10 @@ void forward_region_layer(const layer l, network net)
         if(l.softmax_tree){//计算softmax_tree形式下的 loss-begin
             int onlyclass = 0;
             for(t = 0; t < 30; ++t){
+		    /// 通过移位来获取每一个真实矩形框的信息，net.truth存储了网络吞入的所有图片的真实矩形框信息（一次吞入一个batch的训练图片），
+		/// net.truth作为这一个大数组的首地址，l.truths参数是每一张图片含有的真实值参数个数（可参考layer.h中的truths参数中的注释），
+		/// b是batch中已经处理完图片的图片的张数，l.coords + 1是每个真实矩形框需要5个参数值（也即每条矩形框真值有5个参数），t是本张图片已经处理
+		/// 过的矩形框的个数（每张图片最多处理30张图片），明白了上面的参数之后对于下面的移位获取对应矩形框真实值的代码就不难了。
                 box truth = float_to_box(net.truth + t*(l.coords + 1) + b*l.truths, 1);
                 if(!truth.x) break;
                 int class = net.truth[t*(l.coords + 1) + b*l.truths + 4];
