@@ -1,3 +1,8 @@
+/**********************参考文章链接如下*********************************/
+//https://www.jianshu.com/p/e06ff630accf
+//http://www.mamicode.com/info-detail-1974310.html
+//https://blog.csdn.net/xueyingxue001/article/details/72831551
+//http://www.voidcn.com/article/p-upajeqpz-brz.html
 #include "region_layer.h"
 #include "activations.h"
 #include "blas.h"
@@ -480,11 +485,11 @@ void get_region_boxes(layer l, int w, int h, int netw, int neth, float thresh, f
             }
             int obj_index = entry_index(l, 0, n*l.w*l.h + i, 4);
             int box_index = entry_index(l, 0, n*l.w*l.h + i, 0);
-            float scale = l.background ? 1 : predictions[obj_index];
-            boxes[index] = get_region_box(predictions, l.biases, n, box_index, col, row, l.w, l.h, l.w*l.h);
+            float scale = l.background ? 1 : predictions[obj_index];//是否是物体的概率
+            boxes[index] = get_region_box(predictions, l.biases, n, box_index, col, row, l.w, l.h, l.w*l.h);//计算出归一化的bbox
 
             int class_index = entry_index(l, 0, n*l.w*l.h + i, l.coords + !l.background);
-            if(l.softmax_tree){
+            if(l.softmax_tree){//不考虑这个
 
                 hierarchy_predictions(predictions + class_index, l.classes, l.softmax_tree, 0, l.w*l.h);
                 if(map){
@@ -502,7 +507,7 @@ void get_region_boxes(layer l, int w, int h, int netw, int neth, float thresh, f
                 float max = 0;
                 for(j = 0; j < l.classes; ++j){
                     int class_index = entry_index(l, 0, n*l.w*l.h + i, 5 + j);
-                    float prob = scale*predictions[class_index];
+                    float prob = scale*predictions[class_index];//类别概率乘以是否是物体的概率
                     probs[index][j] = (prob > thresh) ? prob : 0;
                     if(prob > max) max = prob;
                     // TODO REMOVE
@@ -523,7 +528,7 @@ void get_region_boxes(layer l, int w, int h, int netw, int neth, float thresh, f
             }
         }
     }
-    correct_region_boxes(boxes, l.w*l.h*l.n, w, h, netw, neth, relative);
+    correct_region_boxes(boxes, l.w*l.h*l.n, w, h, netw, neth, relative);//将归一化bbox尺度映射到原始图片的尺度
 }
 
 #ifdef GPU
