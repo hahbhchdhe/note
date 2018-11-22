@@ -30,7 +30,7 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     l.bias_updates = calloc(n*2, sizeof(float));
     l.outputs = h*w*n*(classes + coords + 1);//输出 feature map 大小,e.g. whole boxes 13*13*5*(20+4+1) 
     l.inputs = l.outputs;
-    l.truths = 30*(l.coords + 1);//这里的30应该是限制了每帧图像中目标的最大个数
+    l.truths = 30*(l.coords + 1);// 一张图片含有的truth box参数的个数（30表示一张图片最多有30个ground truth box，写死的）
     l.delta = calloc(batch*l.outputs, sizeof(float));//batch*outputs
     l.output = calloc(batch*l.outputs, sizeof(float));
     int i;
@@ -92,7 +92,7 @@ box get_region_box(float *x, float *biases, int n, int index, int i, int j, int 
     b.h = exp(x[index + 3*stride]) * biases[2*n+1] / h;
     return b;
 }
-/***********************计算loss*****************************/
+/***********************计算box loss的梯度*****************************/
 float delta_region_box(box truth, float *x, float *biases, int n, int index, int i, int j, int w, int h, float *delta, float scale, int stride)
 {
     box pred = get_region_box(x, biases, n, index, i, j, w, h, stride);
@@ -109,11 +109,11 @@ float delta_region_box(box truth, float *x, float *biases, int n, int index, int
     delta[index + 3*stride] = scale * (th - x[index + 3*stride]);
     return iou;
 }
-
+/***********************计算class loss的梯度*****************************/
 void delta_region_class(float *output, float *delta, int index, int class, int classes, tree *hier, float scale, int stride, float *avg_cat)
 {
     int i, n;
-    if(hier){
+    if(hier){// word tree类型的loss
         float pred = 1;
         while(class >= 0){
             pred *= output[index + stride*class];
@@ -127,8 +127,9 @@ void delta_region_class(float *output, float *delta, int index, int class, int c
             class = hier->parent[class];
         }
         *avg_cat += pred;
-    } else {
+    } else {//这就是普通的loss
         for(n = 0; n < classes; ++n){
+	    // 把所有 class 的预测概率与真实 class 的 0/1 的差 * scale，然后存入 l.delta 里相应 class 序号的位置
             delta[index + stride*n] = scale * (((n == class)?1 : 0) - output[index + stride*n]);
             if(n == class) *avg_cat += output[index + stride*n];
         }
@@ -168,7 +169,20 @@ int entry_index(layer l, int batch, int location, int entry)
     int loc = location % (l.w*l.h);
     return batch*l.outputs + n*l.w*l.h*(l.coords+l.classes+1) + entry*l.w*l.h + loc;
 }
+/*****************************计算loss******************************************/
+/*
+源码中计算loss的步骤：
 
+1.计算不包含目标的anchors的iou损失
+
+2.12800样本之前计算未预测到target的anchors的梯度
+
+3.针对于每一个target，计算最接近的anchor的coord梯度
+
+4.计算包含目标的anchors的iou损失
+
+5.计算类别预测的损失和梯度
+*/
 void forward_region_layer(const layer l, network net)
 {//这个函数就是前馈计算损失函数的
     int i,j,b,t,n;
@@ -244,7 +258,7 @@ void forward_region_layer(const layer l, network net)
             }
             if(onlyclass) continue;
         }//计算softmax_tree形式下的loss-over
-        /**************计算noobj时的confidence loss(遍历那 13*13 个格子后判断当期格子有无物体，然后计算 loss)**********************/
+        /**************1.计算noobj时的confidence loss(遍历那 13*13 个格子后判断当期格子有无物体，然后计算 loss)**********************/
         /*
         // 实际是计算没有物体的 box 的 confidence 的 loss
 		// 1， 遍历所有格子以及每个格子的 box，计算每个 box 与真实 box 的 best_iou
@@ -281,7 +295,7 @@ void forward_region_layer(const layer l, network net)
                     if (best_iou > l.thresh) {
                         l.delta[obj_index] = 0;
                     }
-                    /********************region loss***********************/
+                    /********************2.region loss***********************/
                     //net.seen 已训练样本的个数，记录网络看了多少张图片了
                     //如果当前cell没有目标物体（即在这一块没有ground truth落入），将当前anchor的位置和大小当作“ground truth”-a
                     //将网络预测出的预测位置和a进行相减求误差，配以scale=0.01的权重计算损失，主要目的是为了在模型训练的前期更加稳定
@@ -302,7 +316,7 @@ void forward_region_layer(const layer l, network net)
                 }
             }
         }
-        /*********************region box loss********************/
+        /*********************3.region box loss********************/
         //因此下面是“直接遍历一张图片中的所有已标记的物体的中心所在的格子，然后计算 loss”，而不是“遍历那 13*13 个格子后判断当期格子有无物体，然后计算 loss”
         /*首先遍历ground truth box，然后从所有已标记的物体（ground truth box）中心点所在的那个cell的n个pred boxes中找到IOU最大的box来计算loss*/
         for(t = 0; t < 30; ++t){
@@ -346,11 +360,15 @@ void forward_region_layer(const layer l, network net)
             //printf("%d %f (%f, %f) %f x %f\n", best_n, best_iou, truth.x, truth.y, truth.w, truth.h);
             // 根据上面的 best_n 找出 box 的 index
             int box_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, 0);
-            //l.coord_scale *  (2 - truth.w*truth.h)为scale，delta[index + 0*stride] = scale * (tx - x[index + 0*stride]);
+            /*
+	    在计算boxes的 w 和 h 误差时，YOLOv1中采用的是平方根以降低boxes的大小对误差的影响，而YOLOv2是直接计算，
+	    但是根据ground truth的大小对权重系数进行修正：l.coord_scale * (2 - truth.w*truth.h)（这里w和h都归一化到(0,1))，
+	    这样对于尺度较小的boxes其权重系数会更大一些，可以放大误差，起到和YOLOv1计算平方根相似的效果
+	    */
             float iou = delta_region_box(truth, l.output, l.biases, best_n, box_index, i, j, l.w, l.h, l.delta, l.coord_scale *  (2 - truth.w*truth.h), l.w*l.h);
             if(iou > .5) recall += 1;// 如果iou> 0.5, 认为找到该目标，召回数+1
             avg_iou += iou;
-            /************计算有object的框框的confidence loss*****************/
+            /************4.计算有object的框框的confidence loss*****************/
             //l.delta[best_index + 4] = iou - l.output[best_index + 4];
             // 根据 best_n 找出 confidence 的 index
             int obj_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, l.coords);
@@ -358,22 +376,28 @@ void forward_region_layer(const layer l, network net)
             avg_obj += l.output[obj_index];
             // 因为运行到这里意味着该格子中有物体中心，所以该格子的confidence就是1， 而预测的confidence是l.output[obj_index]，所以根据公式有下式
             l.delta[obj_index] = l.object_scale * (1 - l.output[obj_index]);
-            if (l.rescore) {
+            if (l.rescore) { //控制参数rescore，当其为1时，target取best_n的预测框与ground truth的真实IOU值（cfg文件中默认采用这种方式）
+		    /*如果这个栅格中不存在一个 object，则confidence score应该为0；
+		    否则的话，confidence score则为 predicted bounding box与 ground truth box之间的 IOU*/
                 l.delta[obj_index] = l.object_scale * (iou - l.output[obj_index]);
             }
-            if(l.background){
+            if(l.background){//不执行
                 l.delta[obj_index] = l.object_scale * (0 - l.output[obj_index]);
             }
-            /*******************类别回归的 loss************************/
-            int class = net.truth[t*(l.coords + 1) + b*l.truths + l.coords];
-            if (l.map) class = l.map[class];
-            int class_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, l.coords + 1);
+            /*******************5.类别回归的 loss************************/
+            int class = net.truth[t*(l.coords + 1) + b*l.truths + l.coords];// 真实类别
+            if (l.map) class = l.map[class];//不执行
+            int class_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, l.coords + 1);//预测的class向量首地址
+	    // 把所有 class 的预测概率与真实class的0/1的差* scale，然后存入l.delta里相应class序号的位置
             delta_region_class(l.output, l.delta, class_index, class, l.classes, l.softmax_tree, l.class_scale, l.w*l.h, &avg_cat);
             ++count;
             ++class_count;
         }
     }
     //printf("\n");
+	/**********************终端输出*****************************/
+    //现在，l.delta 中的每一个位置都存放了 class、confidence、x, y, w, h 的差，于是通过 mag_array 遍历所有位置，计算每个位置的平方的和后开根
+    // 然后利用 pow 函数求平方
     *(l.cost) = pow(mag_array(l.delta, l.outputs * l.batch), 2);
     printf("Region Avg IOU: %f, Class: %f, Obj: %f, No Obj: %f, Avg Recall: %f,  count: %d\n", avg_iou/count, avg_cat/class_count, avg_obj/count, avg_anyobj/(l.w*l.h*l.n*l.batch), recall/count, count);
 }
@@ -418,7 +442,7 @@ void correct_region_boxes(box *boxes, int n, int w, int h, int netw, int neth, i
         boxes[i] = b;
     }
 }
-
+/****************获取检测到的boxes********************/
 void get_region_boxes(layer l, int w, int h, int netw, int neth, float thresh, float **probs, box *boxes, int only_objectness, int *map, float tree_thresh, int relative)
 {
     int i,j,n,z;
@@ -616,7 +640,7 @@ void backward_region_layer_gpu(const layer l, network net)
     axpy_ongpu(l.batch*l.inputs, 1, l.delta_gpu, 1, net.delta_gpu, 1);
 }
 #endif
-
+/***这个函数在图像风格转换中用于把 object confidence 置为0****/
 void zero_objectness(layer l)
 {
     int i, n;
