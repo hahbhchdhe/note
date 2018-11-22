@@ -1,3 +1,4 @@
+/*************yolov2 源码损失计算部分：region_layer.c注释***************/
 /**********************参考文章链接如下*********************************/
 //https://www.jianshu.com/p/e06ff630accf
 //http://www.mamicode.com/info-detail-1974310.html
