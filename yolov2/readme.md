@@ -1,6 +1,6 @@
 # yolov2源码详解
-/play secret训练命令： **./darknet detector train cfg/coco.data cfg/yolo.cfg darknet19_448.conv.23**  
-测试图片命令： **./darknet detect test cfg/coco.data cfg/yolo.cfg yolo.weights data/dog.jpg**
+:small_blue_diamond:训练命令： **./darknet detector train cfg/coco.data cfg/yolo.cfg darknet19_448.conv.23**  
+:small_blue_diamond:测试图片命令： **./darknet detect test cfg/coco.data cfg/yolo.cfg yolo.weights data/dog.jpg**
 ## 1.训练部分
 ### 1.1
 首先./darknet是程序的名称，主函数应该在darknet.c源文件中，其main()函数中，要求输入的参数不少于2个。  
