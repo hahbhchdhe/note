@@ -389,7 +389,7 @@ void forward_region_layer(const layer l, network net)
             l.delta[obj_index] = l.object_scale * (1 - l.output[obj_index]);
             if (l.rescore) { //控制参数rescore，当其为1时，target取best_n的预测框与ground truth的真实IOU值（cfg文件中默认采用这种方式）
 		    /*如果这个栅格中不存在一个 object，则confidence score应该为0；
-		    否则的话，confidence score则为 predicted bounding box与 ground truth box之间的 IOU*/
+		    否则的话，confidence则为 predicted bounding box与 ground truth box之间的 IOU*/
                 l.delta[obj_index] = l.object_scale * (iou - l.output[obj_index]);
             }
             if(l.background){//不执行
