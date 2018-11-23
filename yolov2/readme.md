@@ -226,8 +226,9 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     save_weights(net, buff);
 }
 ```
-进入**src/parser.c** ，解析cfg文件**parse_network_cfg()** 
-###1.4 parse.c->parse_network_cfg()
+进入**src/parser.c** ，解析cfg文件**parse_network_cfg()**   
+
+### 1.4 parse.c->parse_network_cfg()
 [section结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L43)
 [network结构体定义](https://github.com/pjreddie/darknet/blob/61c9d02ec461e30d55762ec7669d6a1d3c356fb2/include/darknet.h#L430)
 [size_params结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L121)  
@@ -349,8 +350,9 @@ network parse_network_cfg(char *filename)
     return net;
 }
 ```
-其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层
-####1.4.1 parse.c->parse_convolutional()
+其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层  
+
+#### 1.4.1 parse.c->parse_convolutional()
 解析卷积层参数
 ``` c
 convolutional_layer parse_convolutional(list *options, size_params params)
@@ -384,7 +386,8 @@ convolutional_layer parse_convolutional(list *options, size_params params)
 }
 ```
 其中，会进入**src/convolutional_layer.c**文件，调用**make_convolutional_layer()** 方法，进行解析卷积层
-#####1.4.1.1 convolutional_layer.c->make_convolutional_layer()
+
+##### 1.4.1.1 convolutional_layer.c->make_convolutional_layer()
 [layer类型结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/include/darknet.h#L119)
 ``` c
 /* 
