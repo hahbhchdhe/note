@@ -14,7 +14,7 @@
 ```
 ### 1.2 detector.c->run_detector()
 **detector.c** 中 **run_detector()** 函数，*argv[2]* 为"train"   
-**因为是训练过程，所以进入train_detector（）函数。**[代码定位](https://github.com/pjreddie/darknet/blob/56d69e73aba37283ea7b9726b81afd2f79cd1134/examples/detector.c#L655)   
+**因为是训练过程，所以进入train_detector()函数。** [代码定位](https://github.com/pjreddie/darknet/blob/56d69e73aba37283ea7b9726b81afd2f79cd1134/examples/detector.c#L655)   
 ``` c
 if(0==strcmp(argv[2], "test")) test_detector(datacfg, cfg, weights, filename, thresh, hier_thresh, outfile, fullscreen);
     else if(0==strcmp(argv[2], "test2")) test_detector2(datacfg, cfg, weights, filename, thresh, hier_thresh, outfile, fullscreen);
@@ -30,7 +30,7 @@ if(0==strcmp(argv[2], "test")) test_detector(datacfg, cfg, weights, filename, th
         demo(cfg, weights, thresh, cam_index, filename, names, classes, frame_skip, prefix, avg, hier_thresh, width, height, fps, fullscreen);
     }
 ```
-###1.3 detector.c->train_detector()
+### 1.3 detector.c->train_detector()
 [代码定位](https://github.com/pjreddie/darknet/blob/56d69e73aba37283ea7b9726b81afd2f79cd1134/examples/detector.c#L5)  
 ``` c
 /*
@@ -546,5 +546,6 @@ void load_weights(network *net, char *filename)
     //调用load_weights_upto(net, filename, net->n)函数
     load_weights_upto(net, filename, 0, net->n);
 ```
-#### 1.5.1 load_weights_upto()
+#### 1.5.1 parser.c->load_weights_upto()
+
 
