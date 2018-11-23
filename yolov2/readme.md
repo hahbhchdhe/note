@@ -49,8 +49,12 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     list *options = read_data_cfg(datacfg);
    /*从options找出训练图片路径信息，如果没找到，默认使用"data/train.list"路径下的图片信息（train.list含有标准的信息格式：<object-class> <x> <y> <width> <height>）。该文件可以由darknet提供的scripts/voc_label.py根据自行在网上下载的voc数据集生成，所以说是默认路径，其实也需要使用者自行调整，也可以任意命名，不一定要为train.list*/
     char *train_images = option_find_str(options, "train", "data/train.list");//train_images将含有训练图片中所有图片的标签以及定位信息
+    
     char *backup_directory = option_find_str(options, "backup", "/backup/");
-    srand(time(0));//srand()与rand()结合产生随机数 
+    /*srand函数是随机数发生器的初始化函数。srand和rand()配合使用产生伪随机数序列。
+    rand函数在产生随机数前，需要系统提供的生成伪随机数序列的种子，rand根据这个种子的值产生一系列随机数。
+    如果系统提供的种子没有变化，每次调用rand函数生成的伪随机数序列都是一样的。*/
+    srand(time(0));
     char *base = basecfg(cfgfile); //读取网络配置文件 
     printf("%s\n", base);
     float avg_loss = -1;
@@ -66,10 +70,10 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
 #ifdef GPU
         cuda_set_device(gpus[i]);
 #endif
-        nets[i] = parse_network_cfg(cfgfile);//解析网络结构，包括训练参数，层数，各层的类别、参数，各层的输入大小等。
+        nets[i] = parse_network_cfg(cfgfile);//1.4解析网络结构，包括训练参数，层数，各层的类别、参数，各层的输入大小等。
         //如果命令包含权重文件，则装载权重文件
         if(weightfile){
-            load_weights(&nets[i], weightfile);
+            load_weights(&nets[i], weightfile);//1.5
         }
         //清空记录训练次数
         if(clear) *nets[i].seen = 0;
@@ -81,7 +85,7 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     int imgs = net.batch * net.subdivisions * ngpus;
     printf("Learning Rate: %g, Momentum: %g, Decay: %g\n", net.learning_rate, net.momentum, net.decay);
     data train, buffer;
-    //
+    //网络的最后一层，如region层(最后一层的索引号是net.n-1)
     layer l = net.layers[net.n - 1];
 
     int classes = l.classes;
@@ -97,7 +101,7 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     args.h = net.h;
     args.paths = paths;
     args.n = imgs;//一次加载的数据量
-    args.m = plist->size;//总的数据量
+    args.m = plist->size;//m是带训练图片总的数据量
     args.classes = classes;
     args.jitter = jitter;
     args.num_boxes = l.max_boxes;//默认是30个
@@ -110,7 +114,8 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     args.exposure = net.exposure;
     args.saturation = net.saturation;
     args.hue = net.hue;
-
+    /*返回线程ID，其类型为pthread_t，去创建一个执行什么的线程，但是暂时还没有启动这个线程吧。load_data去加载数据的，load_data创建多线程*/
+    //n张图片以及图片上的truth box会被加载到buffer.X,buffer.y里面去
     pthread_t load_thread = load_data(args);
     clock_t time;
     int count = 0;
@@ -127,7 +132,7 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
             args.w = dim;
             args.h = dim;
             //线程相关 系统方法，可自行百度
-            pthread_join(load_thread, 0);
+            pthread_join(load_thread, 0);//wait for load_thread ternimate
             train = buffer;
             free_data(train);
             load_thread = load_data(args);
@@ -139,7 +144,9 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
         }
         //如果不进行多尺度训练
         time=clock();
+        //args.n数量的图像由args.threads个子线程加载完成,该线程会退出
         pthread_join(load_thread, 0);
+        //加载完成的args.n张图像会存入到args.d中
         train = buffer;
         load_thread = load_data(args);
         //可视化数据扩增之后训练样本
@@ -205,6 +212,9 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
             sprintf(buff, "%s/%s_%d.weights", backup_directory, base, i);
             save_weights(net, buff);
         }
+        //这里要相当注意,train指针指向的空间来自于buffer,而buffer中的空间来自于load_data函数
+	//后续逻辑中动态分配的空间,而在train被赋值为buffer以后,在下一次load_data逻辑中会
+        //再次动态分配,这里一定要记得释放前一次分配的,否则指针将脱钩,内存泄漏不可避免
         free_data(train);
     }
 //迭代次数达到最大值，保存最后权重
@@ -216,3 +226,322 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     save_weights(net, buff);
 }
 ```
+进入**src/parser.c** ，解析cfg文件**parse_network_cfg()** 
+###1.4 parse.c->parse_network_cfg()
+[section结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L43)
+[network结构体定义](https://github.com/pjreddie/darknet/blob/61c9d02ec461e30d55762ec7669d6a1d3c356fb2/include/darknet.h#L430)
+[size_params结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L121)  
+读取每一层的类型和参数，并解析。其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层
+``` c
+/*
+*从神经网络结构参数文件中读入所有神经网络层的结构参数，存储到sections中，
+*sections的每个node包含一层神经网络的所有结构参数
+*/
+network parse_network_cfg(char *filename)
+{
+    /*
+    *sections是一个list，其中包含n（即网络的层数）个section，每个section包含type以及options，每个options又是一个小list。
+    *注意，返回的都是空的，只有每个section中的type是各层的类别而已.sections的作用仅仅是提供给一共有多少层
+    */
+    list *sections = read_cfg(filename);
+    
+    // 获取sections的第一个节点，可以查看一下cfg/***.cfg文件，其实第一块参数（以[net]开头）不是某层神经网络的参数，
+    // 而是关于整个网络的一些通用参数，比如学习率，衰减率，输入图像宽高，batch大小等，
+    // 具体的关于某个网络层的参数是从第二块开始的，如[convolutional],[maxpool]...，
+    // 这些层并没有编号，只说明了层的属性，但层的参数都是按顺序在文件中排好的，读入时，
+    // sections链表上的顺序就是文件中的排列顺序。
+    node *n = sections->front;//双向链表，前向和后项都是一个node数据结构
+    if(!n) error("Config file has no sections");
+    // 创建网络结构并动态分配内存：输入网络层数为sections->size - 1，sections的第一段不是网络层，而是通用网络参数
+    network net = make_network(sections->size - 1);//make_network()在network.c里面，产生network这种数据结构
+    
+    // 所用显卡的卡号（gpu_index在cuda.c中用extern关键字声明）
+    // 在调用parse_network_cfg()之前，使用了cuda_set_device()设置了gpu_index的值号为当前活跃GPU卡号
+    net.gpu_index = gpu_index;
+    // size_params结构体元素不含指针变量
+    size_params params;//是包含了网络和训练的参数，size_params定义在parser.c中
+
+    section *s = (section *)n->val;//.cfg文件第一部分参数type和options存储的首地址（n是一个node结构，这个结构中的val是一个void*，所以这里就是将node结构中的val强转为section*）
+    list *options = s->options;//第一部分参数的值的首地址
+    if(!is_network(s)) error("First section must be [net] or [network]");
+    parse_net_options(options, &net);//将options中的参数，如batch,lr,decay等存入net结构体
+
+    params.h = net.h;
+    params.w = net.w;
+    params.c = net.c;
+    params.inputs = net.inputs;
+    params.batch = net.batch;
+    params.time_steps = net.time_steps;
+    params.net = net;
+
+    size_t workspace_size = 0;
+    n = n->next;//[net]搞定了，接下来去下一个node
+    int count = 0;
+    free_section(s);
+    fprintf(stderr, "layer     filters    size              input                output\n");
+    while(n){
+        params.index = count;
+        fprintf(stderr, "%5d ", count);
+        s = (section *)n->val;//同上
+        options = s->options;
+        layer l = {0};
+        LAYER_TYPE lt = string_to_layer_type(s->type);//返回[...]中的字符串，并且变大写
+        if(lt == CONVOLUTIONAL){
+            l = parse_convolutional(options, params);
+        }else if(lt == DECONVOLUTIONAL){
+            l = parse_deconvolutional(options, params);
+                。
+                。
+                。
+        }
+#ifdef GPU
+            l.output_gpu = net.layers[count-1].output_gpu;
+            l.delta_gpu = net.layers[count-1].delta_gpu;
+#endif
+        }else{
+            fprintf(stderr, "Type not recognized: %s\n", s->type);
+        }
+        l.truth = option_find_int_quiet(options, "truth", 0);
+        l.onlyforward = option_find_int_quiet(options, "onlyforward", 0);
+        l.stopbackward = option_find_int_quiet(options, "stopbackward", 0);
+        l.dontload = option_find_int_quiet(options, "dontload", 0);
+        l.dontloadscales = option_find_int_quiet(options, "dontloadscales", 0);
+        l.learning_rate_scale = option_find_float_quiet(options, "learning_rate", 1);
+        l.smooth = option_find_float_quiet(options, "smooth", 0);
+        option_unused(options);
+        net.layers[count] = l;
+        if (l.workspace_size > workspace_size) workspace_size = l.workspace_size;
+        free_section(s);
+        n = n->next;
+        ++count;
+        if(n){//这边是前面一层的输出作为下一层的输入
+            params.h = l.out_h;
+            params.w = l.out_w;
+            params.c = l.out_c;
+            params.inputs = l.outputs;
+        }
+    }//循环读取cfg文件中每个网络层参数到net中去   
+    free_list(sections);
+    layer out = get_network_output_layer(net);
+    net.outputs = out.outputs;
+    net.truths = out.outputs;
+    if(net.layers[net.n-1].truths) net.truths = net.layers[net.n-1].truths;
+    net.output = out.output;
+    net.input = calloc(net.inputs*net.batch, sizeof(float));
+    net.truth = calloc(net.truths*net.batch, sizeof(float));
+#ifdef GPU
+    net.output_gpu = out.output_gpu;
+    net.input_gpu = cuda_make_array(net.input, net.inputs*net.batch);
+    net.truth_gpu = cuda_make_array(net.truth, net.truths*net.batch);
+#endif
+    if(workspace_size){
+        //printf("%ld\n", workspace_size);
+#ifdef GPU
+        if(gpu_index >= 0){
+            net.workspace = cuda_make_array(0, (workspace_size-1)/sizeof(float)+1);
+        }else {
+            net.workspace = calloc(1, workspace_size);
+        }
+#else
+        net.workspace = calloc(1, workspace_size);
+#endif
+    }
+    return net;
+}
+```
+其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层
+####1.4.1 parse.c->parse_convolutional()
+解析卷积层参数
+``` c
+convolutional_layer parse_convolutional(list *options, size_params params)
+{
+    int n = option_find_int(options, "filters",1);//卷积核个数
+    int size = option_find_int(options, "size",1);//卷积核大小
+    int stride = option_find_int(options, "stride",1);//步长
+    int pad = option_find_int_quiet(options, "pad",0);//图像周围是否补0
+    int padding = option_find_int_quiet(options, "padding",0);//补0的长度
+    int groups = option_find_int_quiet(options, "groups", 1);
+    if(pad) padding = size/2;
+
+    char *activation_s = option_find_str(options, "activation", "logistic");
+    ACTIVATION activation = get_activation(activation_s);
+
+    int batch,h,w,c;
+    h = params.h;//图片的高
+    w = params.w;//图片的宽
+    c = params.c;//图片的通道数
+    batch=params.batch;
+    if(!(h && w && c)) error("Layer before convolutional layer must output image.");
+    int batch_normalize = option_find_int_quiet(options, "batch_normalize", 0);//BN操作
+    int binary = option_find_int_quiet(options, "binary", 0);//权重二值化
+    int xnor = option_find_int_quiet(options, "xnor", 0);//权重和输入二值化
+    //解析卷积层
+    convolutional_layer layer = make_convolutional_layer(batch,h,w,c,n,groups,size,stride,padding,activation, batch_normalize, binary, xnor, params.net->adam);
+    layer.flipped = option_find_int_quiet(options, "flipped", 0);
+    layer.dot = option_find_float_quiet(options, "dot", 0);
+
+    return layer;
+}
+```
+其中，会进入**src/convolutional_layer.c**文件，调用**make_convolutional_layer()** 方法，进行解析卷积层
+#####1.4.1.1 convolutional_layer.c->make_convolutional_layer()
+[layer类型结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/include/darknet.h#L119)
+``` c
+/* 
+**  输入：batch    每个batch含有的图片数
+**      h               图片高度（行数）
+**      w               图片宽度（列数）
+        c               输入图片通道数
+        n               卷积核个数
+        size            卷积核尺寸
+        stride          跨度
+        padding         四周补0长度
+        activation      激活函数类别
+        batch_normalize 是否进行BN(规范化)
+        binary          是否对权重进行二值化
+        xnor            是否对权重以及输入进行二值化
+        adam            使用
+*/
+convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int n, int size, int stride, int padding, ACTIVATION activation, int batch_normalize, int binary, int xnor, int adam)
+{
+    int i;
+    // convolutional_layer是使用typedef定义的layer的别名
+    convolutional_layer l = {0};
+    l.type = CONVOLUTIONAL; // 层属性：卷积层
+
+    l.h = h;                // 输入图像高度
+    l.w = w;                // 输入图像宽度
+    l.c = c;                // 输入图像通道
+    l.n = n;                // 卷积核个数（即滤波器个数）
+    l.binary = binary;      // 是否对权重进行二值化
+    l.xnor = xnor;          // 是否对权重以及输入进行二值化
+    l.batch = batch;        // 每个batch含有的图片数
+    l.stride = stride;      // 跨度
+    l.size = size;          // 卷积核尺寸
+    l.pad = padding;        // 四周补0长度
+    l.batch_normalize = batch_normalize;    // 是否进行BN(规范化)
+
+    // 该卷积层总的权重元素（卷积核元素）个数=输入图像通道数*卷积核个数*卷积核尺寸
+    // （因为一个卷积核要作用在输入图片的所有通道上，所以说是一个卷积核，实际含有的卷积核参数个数需要乘以输入图片的通道数）
+    l.weights = calloc(c*n*size*size, sizeof(float));
+    // 
+    l.weight_updates = calloc(c*n*size*size, sizeof(float));
+
+    // bias就是Wx+b中的b（上面的weights就是W），有多少个卷积核，就有多少个b（与W的个数一一对应，每个W的元素个数为c*size*size）
+    l.biases = calloc(n, sizeof(float));
+    l.bias_updates = calloc(n, sizeof(float));
+
+    /// 该卷积层总的权重元素个数（权重元素个数等于输入数据的通道数*卷积核个数*卷积核的二维尺寸，注意因为每一个卷积核是同时作用于输入数据
+    /// 的多个通道上的，因此实际上卷积核是三维的，包括两个维度的平面尺寸，以及输入数据通道数这个维度，每个通道上的卷积核参数都是独立的训练参数）
+    l.nweights = c*n*size*size;
+    l.nbiases = n;
+
+    // float scale = 1./sqrt(size*size*c);
+    float scale = sqrt(2./(size*size*c));
+    //scale = .02;
+    //for(i = 0; i < c*n*size*size; ++i) l.weights[i] = scale*rand_uniform(-1, 1);
+    // 初始化权重：缩放因子*标准正态分布随机数，缩放因子等于sqrt(2./(size*size*c))，为什么取这个值呢？？
+    // 此处初始化权重为正态分布，而在全连接层make_connected_layer()中初始化权重是均匀分布的。
+    // TODO：个人感觉，这里应该加一个if条件语句：if(weightfile)，因为如果导入了预训练权重文件，就没有必要这样初始化了（事实上在detector.c的train_detector()函数中，
+    // 紧接着parse_network_cfg()函数之后，就添加了if(weightfile)语句判断是否导入权重系数文件，如果导入了权重系数文件，也许这里初始化的值也会覆盖掉，
+    // 总之这里的权重初始化的处理方式还是值得思考的，也许更好的方式是应该设置专门的函数进行权重的初始化，同时偏置也是，不过这里似乎没有考虑偏置的初始化，在make_connected_layer()中倒是有。。。）
+    for(i = 0; i < c*n*size*size; ++i) l.weights[i] = scale*rand_normal();
+    
+    // 根据该层输入图像的尺寸、卷积核尺寸以及跨度计算输出特征图的宽度和高度
+    int out_w = convolutional_out_width(l);
+    int out_h = convolutional_out_height(l);
+    l.out_h = out_h;        // 输出图像高度
+    l.out_w = out_w;        // 输出图像宽度
+    l.out_c = n;            // 输出图像通道（等于卷积核个数，有多少个卷积核，最终就得到多少张特征图，每张图是一个通道）
+
+    l.outputs = l.out_h * l.out_w * l.out_c;    // 对应每张输入图片的所有输出特征图的总元素个数（每张输入图片会得到n也即l.out_c张特征图）
+    l.inputs = l.w * l.h * l.c;                 // mini-batch中每张输入图片的像素元素个数
+    // 关于上面两个参数的说明：
+    // 一个mini-batch中有多张图片，每张图片可能有多个通道（彩色图有三通道），l.inputs是每张输入图片所有通道的总元素个数，
+    // 而每张输入图片会有n个卷积核对其进行卷积操作，因此一张输入图片会输出n张特征图，这n张特征图的总元素个数就为l.outputs
+
+    // l.output为该层所有的输出（包括mini-batch所有输入图片的输出）
+    l.output = calloc(l.batch*l.outputs, sizeof(float));
+    l.delta  = calloc(l.batch*l.outputs, sizeof(float));
+
+    // 卷积层三种指针函数，对应三种计算：前向，反向，更新
+    l.forward = forward_convolutional_layer;
+    l.backward = backward_convolutional_layer;
+    l.update = update_convolutional_layer;
+    if(binary){
+        l.binary_weights = calloc(c*n*size*size, sizeof(float));
+        l.cweights = calloc(c*n*size*size, sizeof(char));
+        l.scales = calloc(n, sizeof(float));
+    }
+    if(xnor){
+        l.binary_weights = calloc(c*n*size*size, sizeof(float));
+        l.binary_input = calloc(l.inputs*l.batch, sizeof(float));
+    }
+
+    if(batch_normalize){
+        l.scales = calloc(n, sizeof(float));
+        l.scale_updates = calloc(n, sizeof(float));
+        for(i = 0; i < n; ++i){
+            l.scales[i] = 1;
+        }
+
+        l.mean = calloc(n, sizeof(float));
+        l.variance = calloc(n, sizeof(float));
+
+        l.mean_delta = calloc(n, sizeof(float));
+        l.variance_delta = calloc(n, sizeof(float));
+
+        l.rolling_mean = calloc(n, sizeof(float));
+        l.rolling_variance = calloc(n, sizeof(float));
+        l.x = calloc(l.batch*l.outputs, sizeof(float));
+        l.x_norm = calloc(l.batch*l.outputs, sizeof(float));
+    }
+    if(adam){
+        l.adam = 1;
+        l.m = calloc(c*n*size*size, sizeof(float));
+        l.v = calloc(c*n*size*size, sizeof(float));
+        l.bias_m = calloc(n, sizeof(float));
+        l.scale_m = calloc(n, sizeof(float));
+        l.bias_v = calloc(n, sizeof(float));
+        l.scale_v = calloc(n, sizeof(float));
+    }
+
+#ifdef GPU
+    l.forward_gpu = forward_convolutional_layer_gpu;
+    l.backward_gpu = backward_convolutional_layer_gpu;
+    l.update_gpu = update_convolutional_layer_gpu;
+
+    if(gpu_index >= 0){
+        if (adam) {
+......
+        if(binary){
+.....
+        }
+        if(xnor){
+......
+        }
+
+        if(batch_normalize){
+.......
+        }
+........
+    }
+#endif
+    l.workspace_size = get_workspace_size(l);
+    l.activation = activation;
+
+    fprintf(stderr, "conv  %5d %2d x%2d /%2d  %4d x%4d x%4d   ->  %4d x%4d x%4d\n", n, size, size, stride, w, h, c, l.out_w, l.out_h, l.out_c);
+
+    return l;
+}
+```
+### 1.5 parser.c->load_weights()
+返回train_detector()函数中，顺序往下执行至**load_weights()**  
+``` c
+void load_weights(network *net, char *filename)
+{
+    //调用load_weights_upto(net, filename, net->n)函数
+    load_weights_upto(net, filename, 0, net->n);
+```
+#### 1.5.1 load_weights_upto()
+
