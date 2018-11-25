@@ -5,7 +5,7 @@
 ### 1.1 darknet.c->main()
 首先./darknet是程序的名称，主函数应该在darknet.c源文件中，其main()函数中，要求输入的参数不少于2个.  
 根据不同命令参数*argv[1]* 进入不同的调用方法  
-**在训练过程中：** *argv[1]* 即第二个参数是**“detector”**。 
+**在训练过程中：** *argv[1]* 即第二个参数是**“detector”**。  
 因此，程序进入 **run_detector(argc, argv);**  ,同时把argn和argv传递过去了。
 [代码定位](https://github.com/pjreddie/darknet/blob/56d69e73aba37283ea7b9726b81afd2f79cd1134/examples/darknet.c#L417)
 ``` c
