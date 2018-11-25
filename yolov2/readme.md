@@ -70,10 +70,10 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
 #ifdef GPU
         cuda_set_device(gpus[i]);
 #endif
-        nets[i] = parse_network_cfg(cfgfile);//1.4解析网络结构，包括训练参数，层数，各层的类别、参数，各层的输入大小等。
+        nets[i] = parse_network_cfg(cfgfile);//1.3.1解析网络结构，包括训练参数，层数，各层的类别、参数，各层的输入大小等。
         //如果命令包含权重文件，则装载权重文件
         if(weightfile){
-            load_weights(&nets[i], weightfile);//1.5
+            load_weights(&nets[i], weightfile);//1.3.2
         }
         //清空记录训练次数
         if(clear) *nets[i].seen = 0;
@@ -149,30 +149,6 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
         //加载完成的args.n张图像会存入到args.d中
         train = buffer;
         load_thread = load_data(args);
-        //可视化数据扩增之后训练样本
-        /*
-        int k;
-        for(k = 0; k < l.max_boxes; ++k){
-            box b = float_to_box(train.y.vals[10] + 1 + k*5);
-            if(!b.x) break;
-            printf("loaded: %f %f %f %f\n", b.x, b.y, b.w, b.h);
-        }
-        */
-        /*
-        int zz;
-        for(zz = 0; zz < train.X.cols; ++zz){
-            image im = float_to_image(net.w, net.h, 3, train.X.vals[zz]);
-            int k;
-            for(k = 0; k < l.max_boxes; ++k){
-                box b = float_to_box(train.y.vals[zz] + k*5);
-                printf("%f %f %f %f\n", b.x, b.y, b.w, b.h);
-                draw_bbox(im, b, 1, 1,0,0);
-            }
-            show_image(im, "truth11");
-            cvWaitKey(0);
-            save_image(im, "truth11");
-        }
-        */
 
         printf("Loaded: %lf seconds\n", sec(clock()-time));
 
@@ -182,7 +158,7 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
 //训练网络
 #ifdef GPU
         if(ngpus == 1){
-            loss = train_network(net, train);//开始训练
+            loss = train_network(net, train);//1.3.3开始训练
         } else {
             loss = train_networks(nets, ngpus, train, 4);
         }
@@ -228,9 +204,9 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
 ```
 进入**src/parser.c** ，解析cfg文件**parse_network_cfg()**   
 
-### 1.4 parse.c->parse_network_cfg()
-[section结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L43)
-[network结构体定义](https://github.com/pjreddie/darknet/blob/61c9d02ec461e30d55762ec7669d6a1d3c356fb2/include/darknet.h#L430)
+### 1.3.1 parse.c->parse_network_cfg()
+[section结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L43)  
+[network结构体定义](https://github.com/pjreddie/darknet/blob/61c9d02ec461e30d55762ec7669d6a1d3c356fb2/include/darknet.h#L430)  
 [size_params结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/src/parser.c#L121)  
 读取每一层的类型和参数，并解析。其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层
 ``` c
@@ -288,7 +264,7 @@ network parse_network_cfg(char *filename)
         layer l = {0};
         LAYER_TYPE lt = string_to_layer_type(s->type);//返回[...]中的字符串，并且变大写
         if(lt == CONVOLUTIONAL){
-            l = parse_convolutional(options, params);
+            l = parse_convolutional(options, params);//1.3.1.1
         }else if(lt == DECONVOLUTIONAL){
             l = parse_deconvolutional(options, params);
                 。
@@ -344,6 +320,8 @@ network parse_network_cfg(char *filename)
             net.workspace = calloc(1, workspace_size);
         }
 #else
+	//workspace_size定义为每层中需要的workspace_size的最大值
+	//feature存储在workspace中，其值为一个指针
         net.workspace = calloc(1, workspace_size);
 #endif
     }
@@ -352,8 +330,8 @@ network parse_network_cfg(char *filename)
 ```
 其中，如果.cfg中某一层为 **[convolutional]** ,调用**parse_convolutional(options, params)** 方法，解析卷积层  
 
-#### 1.4.1 parse.c->parse_convolutional()
-解析卷积层参数
+#### 1.3.1.1 parse.c->parse_convolutional()
+parse_convolutional文件是根据cfg文件找到适宜的参数传给make_convolutional_layer，然后具体的层的开辟需要make_convolutional函数来运行。forward_convolutional_layer是运行具体的层的运算。其中，feature存在net.workspace中
 ``` c
 convolutional_layer parse_convolutional(list *options, size_params params)
 {
@@ -378,7 +356,7 @@ convolutional_layer parse_convolutional(list *options, size_params params)
     int binary = option_find_int_quiet(options, "binary", 0);//权重二值化
     int xnor = option_find_int_quiet(options, "xnor", 0);//权重和输入二值化
     //解析卷积层
-    convolutional_layer layer = make_convolutional_layer(batch,h,w,c,n,groups,size,stride,padding,activation, batch_normalize, binary, xnor, params.net->adam);
+    convolutional_layer layer = make_convolutional_layer(batch,h,w,c,n,groups,size,stride,padding,activation, batch_normalize, binary, xnor, params.net->adam);//1.3.1.1.1
     layer.flipped = option_find_int_quiet(options, "flipped", 0);
     layer.dot = option_find_float_quiet(options, "dot", 0);
 
@@ -387,7 +365,7 @@ convolutional_layer parse_convolutional(list *options, size_params params)
 ```
 其中，会进入**src/convolutional_layer.c**文件，调用**make_convolutional_layer()** 方法，进行解析卷积层
 
-##### 1.4.1.1 convolutional_layer.c->make_convolutional_layer()
+##### 1.3.1.1.1 convolutional_layer.c->make_convolutional_layer()
 [layer类型结构体定义](https://github.com/pjreddie/darknet/blob/b13f67bfdd87434e141af532cdb5dc1b8369aa3b/include/darknet.h#L119)
 ``` c
 /* 
@@ -538,14 +516,175 @@ convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int
     return l;
 }
 ```
-### 1.5 parser.c->load_weights()
+### 1.3.2 parser.c->load_weights()
 返回train_detector()函数中，顺序往下执行至**load_weights()**  
 ``` c
 void load_weights(network *net, char *filename)
 {
     //调用load_weights_upto(net, filename, net->n)函数
-    load_weights_upto(net, filename, 0, net->n);
+    load_weights_upto(net, filename, 0, net->n);//1.3.2.1
 ```
-#### 1.5.1 parser.c->load_weights_upto()
+#### 1.3.2.1 parser.c->load_weights_upto()
+``` c
+void load_weights_upto(network *net, char *filename, int start, int cutoff)
+{
+#ifdef GPU
+    if(net->gpu_index >= 0){
+        cuda_set_device(net->gpu_index);
+    }
+#endif
+    fprintf(stderr, "Loading weights from %s...", filename);
+    fflush(stdout);
+    FILE *fp = fopen(filename, "rb");
+    if(!fp) file_error(filename);
 
+    int major;
+    int minor;
+    int revision;
+    fread(&major, sizeof(int), 1, fp);
+    fread(&minor, sizeof(int), 1, fp);
+    fread(&revision, sizeof(int), 1, fp);
+    if ((major*10 + minor) >= 2 && major < 1000 && minor < 1000){
+        fread(net->seen, sizeof(size_t), 1, fp);
+    } else {
+        int iseen = 0;
+        fread(&iseen, sizeof(int), 1, fp);
+        *net->seen = iseen;
+    }
+    int transpose = (major > 1000) || (minor > 1000);
+    
+    int i;
+    for(i = start; i < net->n && i < cutoff; ++i){
+        //读取各层权重
+	layer l = net->layers[i];
+        if (l.dontload) continue;
+        if(l.type == CONVOLUTIONAL || l.type == DECONVOLUTIONAL){
+            load_convolutional_weights(l, fp);//1.3.2.1.1
+        }
+        .
+	.
+	.
+#ifdef GPU
+            if(gpu_index >= 0){
+                push_local_layer(l);
+            }
+#endif
+        }
+    }
+    fprintf(stderr, "Done!\n");
+    fclose(fp);
+}
+```
+#### 1.3.2.1.1 parser.c->load_convolutional_weights()
+先读biases，n个卷积核有n个biasies，然后读入weight的个数num=l.nweights  
+``` c
+/*
+*函数原型：size_t fread ( void *buffer, size_t size, size_t count, FILE *stream) ;
+*buffer：用于接收数据的内存地址
+*size：要读的每个数据项的字节数，单位是字节
+*count：要读count个数据项，每个数据项size个字节.
+*stream：输入流
+*/
+void load_convolutional_weights(layer l, FILE *fp)
+{
+    int num = l.c/l.groups*l.n*l.size*l.size;//卷积层的参数个数，卷积核个数×通道数×卷积核长度×卷积核宽度
+    fread(l.biases, sizeof(float), l.n, fp);
+    if (l.batch_normalize && (!l.dontloadscales)){
+        fread(l.scales, sizeof(float), l.n, fp);
+        fread(l.rolling_mean, sizeof(float), l.n, fp);
+        fread(l.rolling_variance, sizeof(float), l.n, fp);
+	.
+	.
+	.
+    }
+    fread(l.weights, sizeof(float), num, fp);
+    if (l.flipped) {
+    	//转置矩阵
+        transpose_matrix(l.weights, l.c*l.size*l.size, l.n);
+    }
+#ifdef GPU
+    if(gpu_index >= 0){
+        push_convolutional_layer(l);//函数在src/convolutional_kernels.cu中
+    }
+#endif
+}
+```
+### 1.3.3 network.c->train_network()
+调用train_network(network net, data d) ，开始训练  
+``` c
+float train_network(network *net, data d)
+{
+    //调用data的相关参数
+    assert(d.X.rows % net->batch == 0);
+    int batch = net->batch;
+    //注意，n现在表示加载一次数据可以训练几次，其实就是subdivisions
+    int n = d.X.rows / batch;
 
+    int i;
+    float sum = 0;
+    for(i = 0; i < n; ++i){
+    //完成数据拷贝
+        get_next_batch(d, batch, i*batch, net->input, net->truth);//1.3.3.1
+        float err = train_network_datum(net);//1.3.3.2
+        sum += err;
+    }
+    return (float)sum/(n*batch);
+}
+```
+#### 1.3.3.1 data.c->get_next_batch()
+进入src/data.c，调用get_next_batch()，完成数据拷贝  
+``` c
+void get_next_batch(data d, int n, int offset, float *X, float *y)
+{
+    int j;
+    for(j = 0; j < n; ++j){
+	//offset就是第几个batch(i*batch)了，j表示的是每个batch中的第几个样本（图像）
+        int index = offset + j;
+	//void *memcpy(void *dest, const void *src, size_t n);
+        //memcpy函数的功能是从源src所指的内存地址的起始位置开始拷贝n个字节到目标dest所指的内存地址的起始位置中
+        memcpy(X+j*d.X.cols, d.X.vals[index], d.X.cols*sizeof(float));
+        if(y) memcpy(y+j*d.y.cols, d.y.vals[index], d.y.cols*sizeof(float));
+    }
+}
+```
+#### 1.3.3.2 network.c->train_network_datum()
+``` c
+float train_network_datum(network net)
+{
+#ifdef GPU//使用GPU时训练网络
+    if(gpu_index >= 0) return train_network_datum_gpu(net);//1.3.3.2.1
+#endif
+    *net.seen += net.batch;
+    net.train = 1;
+    forward_network(net);
+    backward_network(net);
+    //计算平均损失
+    float error = *net.cost;
+    //*net.seen是已经训练过的子batch数，
+    //((*net.seen)/net.batch)%net.subdivisions的意义正是已经训练过了多少个真正的batch。
+    if(((*net.seen)/net.batch)%net.subdivisions == 0) update_network(net);
+    return error;
+}
+```
+##### 1.3.3.2.1 network_kernels.cu->train_network_datum_gpu()
+``` c
+float train_network_datum_gpu(network net)
+{
+    *net.seen += net.batch;
+
+    int x_size = net.inputs*net.batch;
+    int y_size = net.truths*net.batch;
+    cuda_push_array(net.input_gpu, net.input, x_size);
+    cuda_push_array(net.truth_gpu, net.truth, y_size);
+
+    net.train = 1;
+    //前向反向传播
+    forward_network_gpu(net);
+    backward_network_gpu(net);
+
+    float error = *net.cost;//网络代价 
+    if (((*net.seen) / net.batch) % net.subdivisions == 0) update_network_gpu(net);//更新网络  
+
+    return error;
+}
+```
