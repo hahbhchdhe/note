@@ -1271,13 +1271,15 @@ void calc_anchors(char *datacfg, int num_of_clusters, int width, int height, int
 void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filename, float thresh,
     float hier_thresh, int dont_show, int ext_output, int save_labels, char *outfile, int letter_box)
 {
-    list *options = read_data_cfg(datacfg);
-    char *name_list = option_find_str(options, "names", "data/names.list");
+    list *options = read_data_cfg(datacfg);//读取cfg文件（类似ini文件key=value），存储于双向链表
+    char *name_list = option_find_str(options, "names", "data/names.list");//从option中查找names对应的value，如没有，使用默认值“data/names.list”
     int names_size = 0;
+    //获取所有类别名称**
     char **names = get_labels_custom(name_list, &names_size); //get_labels(name_list);
 
-    image **alphabet = load_alphabet();
-    network net = parse_network_cfg_custom(cfgfile, 1, 1); // set batch=1
+    image **alphabet = load_alphabet();//从data/labels/下加载ASCII码32-127的8种尺寸的图片，后边显示标签用。
+    //加载之前训练的超参（权重等）**
+    network net = parse_network_cfg_custom(cfgfile, 1, 1); // set batch=1，一次检测一张图片
     if (weightfile) {
         load_weights(&net, weightfile);
     }
@@ -1288,7 +1290,7 @@ void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filenam
             name_list, names_size, net.layers[net.n - 1].classes, cfgfile);
         if (net.layers[net.n - 1].classes > names_size) getchar();
     }
-    srand(2222222);
+    srand(2222222);//srand函数是随机数发生器的初始化函数
     char buff[256];
     char *input = buff;
     char *json_buf = NULL;
@@ -1305,46 +1307,58 @@ void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filenam
         if (filename) {
             strncpy(input, filename, 256);
             if (strlen(input) > 0)
-                if (input[strlen(input) - 1] == 0x0d) input[strlen(input) - 1] = 0;
+                if (input[strlen(input) - 1] == 0x0d) input[strlen(input) - 1] = 0;//0x0d代表回车
         }
         else {
             printf("Enter Image Path: ");
             fflush(stdout);
             input = fgets(input, 256, stdin);
             if (!input) break;
-            strtok(input, "\n");
+            strtok(input, "\n");//去掉input中的\n符号
         }
         //image im;
         //image sized = load_image_resize(input, net.w, net.h, net.c, &im);
-        image im = load_image(input, 0, 0, net.c);
-        image sized;
+        image im = load_image(input, 0, 0, net.c);//加载图片，默认当做彩色处理
+        image sized; 
+        /**resize时默认对图片进行拉伸 这样不会保持图片的长宽比:
+        如果想要保持图片的长宽比:
+        during Training: set letter_box=1 in the [net] section in cfg-file
+        during Detection and checking mAP: use flag -letter_box in the command
+        ./darknet detector map cfg/coco.data cfg/yolov3-spp.cfg yolov3-spp.weights -letter_box*/
         if(letter_box) sized = letterbox_image(im, net.w, net.h);
+       
         else sized = resize_image(im, net.w, net.h);
-        layer l = net.layers[net.n - 1];
+        layer l = net.layers[net.n - 1];//获得网络最后一层 在.cfg文件中 最后一层包含了classes类别数目
 
         //box *boxes = calloc(l.w*l.h*l.n, sizeof(box));
         //float **probs = calloc(l.w*l.h*l.n, sizeof(float*));
         //for(j = 0; j < l.w*l.h*l.n; ++j) probs[j] = (float*)calloc(l.classes, sizeof(float));
 
-        float *X = sized.data;
+        float *X = sized.data;//输入网络的图片数据
 
         //time= what_time_is_it_now();
         double time = get_time_point();
-        network_predict(net, X);
+        //预测
+        network_predict(net, X);//预测
         //network_predict_image(&net, im); letterbox = 1;
         printf("%s: Predicted in %lf milli-seconds.\n", input, ((double)get_time_point() - time) / 1000);
         //printf("%s: Predicted in %f seconds.\n", input, (what_time_is_it_now()-time));
 
         int nboxes = 0;
-        detection *dets = get_network_boxes(&net, im.w, im.h, thresh, hier_thresh, 0, 1, &nboxes, letter_box);
+        /*network.c文件里
+        detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num, int letter)
+        net时网络的结果 w h 分别是原始图片的宽 高 thresh是置信度阈值，大于这个阈值我们就认为这个候选框是有物体的 *num是候选框的数目
+        */
+        detection *dets = get_network_boxes(&net, im.w, im.h, thresh, hier_thresh, 0, 1, &nboxes, letter_box);//解析预测结果net
         if (nms) do_nms_sort(dets, nboxes, l.classes, nms);
-        draw_detections_v3(im, dets, nboxes, thresh, names, alphabet, l.classes, ext_output);
+        //获取正确的矩形数据应该在draw_detections里寻找
+        draw_detections_v3(im, dets, nboxes, thresh, names, alphabet, l.classes, ext_output);//画预测结果
         save_image(im, "predictions");
         if (!dont_show) {
             show_image(im, "predictions");
         }
-
-        if (outfile) {
+        //保存标记了预测标签的图片
+        if (outfile) {//outfile默认为null
             if (json_buf) {
                 char *tmp = ", \n";
                 fwrite(tmp, sizeof(char), strlen(tmp), json_file);
@@ -1360,7 +1374,7 @@ void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filenam
         if (save_labels)
         {
             char labelpath[4096];
-            replace_image_to_label(input, labelpath);
+            replace_image_to_label(input, labelpath);//input是检测图片的路径，这个函数得到的是labelpath，其为图片对应label的路径 
 
             FILE* fw = fopen(labelpath, "wb");
             int i;
@@ -1369,7 +1383,10 @@ void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filenam
                 int class_id = -1;
                 float prob = 0;
                 for (j = 0; j < l.classes; ++j) {
-                    if (dets[i].prob[j] > thresh && dets[i].prob[j] > prob) {
+                    //dets是数组，代表一系列的检测结果，每个检测结果代表的一类，每个里只有一个bbox，
+                    //但是这个bbox代表的是哪类呢，*prob是一个惹味数组，里存的就是对应每一类的置信率
+                    /*只有当检测框的当前分类的概率值大于某个阈值时，才认为当前检测框有检测到物体，之后才分析这个物体是什么类别*/
+                    if (dets[i].prob[j] > thresh && dets[i].prob[j] > prob) {//dets是预测结果 是detection结构类型（darknet.h）
                         prob = dets[i].prob[j];
                         class_id = j;
                     }
