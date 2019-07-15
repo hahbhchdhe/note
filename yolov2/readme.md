@@ -81,7 +81,11 @@ void train_detector(char *datacfg, char *cfgfile, char *weightfile, int *gpus, i
     }
     srand(time(0));
     network net = nets[0];
-    //一次载入到显存的图片数量 
+    //一次载入到显存的图片数量
+    //net.batch值是恒为cfg中的batch值除以subdivision的值 net.batch=64/16=4。
+    //所以cfg中的batch是指一次性读取多少张图片，而net.batch则是被subdivision分割成的小batch img=4*16*1=64
+    //for循环中，训练16次，每次训练4张图片。所以绕了半天，虽然每次读取了64张图片，
+    //但实际每次参加训练计算loss的图片数目只有net->batch张，即4张。
     int imgs = net.batch * net.subdivisions * ngpus;
     printf("Learning Rate: %g, Momentum: %g, Decay: %g\n", net.learning_rate, net.momentum, net.decay);
     data train, buffer;
@@ -618,6 +622,8 @@ float train_network(network *net, data d)
     assert(d.X.rows % net->batch == 0);
     int batch = net->batch;
     //注意，n现在表示加载一次数据可以训练几次，其实就是subdivisions
+    //for循环中，训练16次，每次训练4张图片。所以绕了半天，虽然每次读取了64张图片，但实际每次参加训练计算loss的图片数目只有net->batch张，即4张。
+    //但训练16次后才更新参数
     int n = d.X.rows / batch;
 
     int i;
