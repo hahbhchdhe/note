@@ -333,21 +333,25 @@ void forward_region_layer(const layer l, network net)
         for(t = 0; t < 30; ++t){
             //读取一个真实目标框，get truth_box's x, y, w, h，归一化的值
             box truth = float_to_box(net.truth + t*5 + b*l.truths, 1);
-
-            if(!truth.x) break;
+		
+            if(!truth.x) break;// 如果本格子中不包含任何物体的中心，则跳过
             float best_iou = 0;
             int best_n = 0;
             i = (truth.x * l.w);// 类型的强制转换，计算该truth所在的cell的i,j坐标，i为int类型
-            j = (truth.y * l.h);
+            j = (truth.y * l.h);// 假设图片被分成了 13 * 13 个格子，那 l.h 和 l.w 就为 13
+			// 于是要遍历所有的格子，因此就要循环 13 * 13 次
+			// 也因此，i 和 j 就是真实物品中心所在的格子的“行”和“列”
             //printf("%d %f %d %f\n", i, truth.x*l.w, j, truth.y*l.h);
             box truth_shift = truth;
+		//上面获得了 truth box 的 x,y,w,h，这里讲 truth box 的 x,y 偏移到 0,0，记为 truth_shift.x, truth_shift.y，这么做是为了方便计算 iou
             truth_shift.x = 0;
             truth_shift.y = 0;
             //printf("index %d %d\n",i, j);
             for(n = 0; n < l.n; ++n){// 遍历对应的cell预测出的n个anchor
                  // 即通过该cell对应的anchors与truth的iou来判断使用哪一个anchor产生的predict来回归
+		 // 获得预测结果中 box 的 index
                 int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);
-                // 预测box，归一化的值
+                // 预测box，不是真实值，都是相对归一化的值
                 box pred = get_region_box(l.output, l.biases, n, box_index, i, j, l.w, l.h, l.w*l.h);
                  //下面这几句是将truth与anchor中心对齐后，计算anchor与truch的iou
                 /*bias_match标志位用来确定由anchor还是anchor对应的prediction来确定用哪个anchor产生的prediction来回归。
@@ -356,7 +360,7 @@ void forward_region_layer(const layer l, network net)
                 这里我刚开始纳闷，bias_match=0计算的iou和后面rescore=1里面用的iou不是一样了吗，那delta就一直为0啊？
                 其实这里在选择anchor时计算iou是在中心对齐的情况下计算的，所以和后面rescore计算的iou还是不一样的。*/
                 if(l.bias_match){
-                    pred.w = l.biases[2*n]/l.w;//用anchor的长、宽作为计算损失
+                    pred.w = l.biases[2*n]/l.w; // 这里用 anchor box 的值 ÷ l.w 和 l.h 作为预测的 w 和 h
                     pred.h = l.biases[2*n+1]/l.h;
                 }
                 //printf("pred: (%f, %f) %f x %f\n", pred.x, pred.y, pred.w, pred.h);
@@ -376,6 +380,7 @@ void forward_region_layer(const layer l, network net)
 	    但是根据ground truth的大小对权重系数进行修正：l.coord_scale * (2 - truth.w*truth.h)（这里w和h都归一化到(0,1))，
 	    这样对于尺度较小的boxes其权重系数会更大一些，可以放大误差，起到和YOLOv1计算平方根相似的效果
 	    */
+		// 计算 box 和 truth box 的 iou
             float iou = delta_region_box(truth, l.output, l.biases, best_n, box_index, i, j, l.w, l.h, l.delta, l.coord_scale *  (2 - truth.w*truth.h), l.w*l.h);
             if(iou > .5) recall += 1;// 如果iou> 0.5, 认为找到该目标，召回数+1
             avg_iou += iou;
@@ -390,7 +395,7 @@ void forward_region_layer(const layer l, network net)
             if (l.rescore) { //控制参数rescore，当其为1时，target取best_n的预测框与ground truth的真实IOU值（cfg文件中默认采用这种方式）
 		    /*如果这个栅格中不存在一个 object，则confidence score应该为0；
 		    否则的话，confidence则为 predicted bounding box与 ground truth box之间的 IOU*/
-                l.delta[obj_index] = l.object_scale * (iou - l.output[obj_index]);
+                l.delta[obj_index] = l.object_scale * (iou - l.output[obj_index]);//// 用 iou 代替上面的 1(经调试，l.rescore = 1，因此能走到这里)
             }
             if(l.background){//不执行
                 l.delta[obj_index] = l.object_scale * (0 - l.output[obj_index]);
@@ -398,6 +403,7 @@ void forward_region_layer(const layer l, network net)
             /*******************5.类别回归的 loss************************/
             int class = net.truth[t*(l.coords + 1) + b*l.truths + l.coords];// 真实类别
             if (l.map) class = l.map[class];//不执行
+		// 获得预测的 class 的 index
             int class_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, l.coords + 1);//预测的class向量首地址
 	    // 把所有 class 的预测概率与真实class的0/1的差* scale，然后存入l.delta里相应class序号的位置
             delta_region_class(l.output, l.delta, class_index, class, l.classes, l.softmax_tree, l.class_scale, l.w*l.h, &avg_cat);
