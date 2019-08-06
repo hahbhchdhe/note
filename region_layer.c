@@ -92,7 +92,9 @@ box get_region_box(float *x, float *biases, int n, int index, int i, int j, int 
     σ是sigmoid函数。
     tx,ty,tw,th,to是要学习的参数，分别用于预测边框的中心和宽高，以及置信度
     */
-    box b;
+    box b;//i就是论文中的Cx。
+    //预测的输出:x[index+0*stride]就是相对于grid cell的左上角的水平偏移量
+    //最后做归一化。以下都是按照论文的公式返回的。
     b.x = (i + x[index + 0*stride]) / w;//占整体的比例，此处w，h为最后一层feature的宽高
     b.y = (j + x[index + 1*stride]) / h;
     b.w = exp(x[index + 2*stride]) * biases[2*n]   / w;
@@ -105,8 +107,9 @@ float delta_region_box(box truth, float *x, float *biases, int n, int index, int
     box pred = get_region_box(x, biases, n, index, i, j, w, h, stride);
     float iou = box_iou(pred, truth);
 
-    float tx = (truth.x*w - i);
-    float ty = (truth.y*h - j);
+    float tx = (truth.x*w - i);//truth box的相对grid cell左上角的x
+    float ty = (truth.y*h - j);//truth box的相对grid cell左上角的y
+    //对照着get_region_box的b.w,b.h的处理方法来看，将他们统一到一个表示方法上
     float tw = log(truth.w*w / biases[2*n]);
     float th = log(truth.h*h / biases[2*n + 1]);
 
