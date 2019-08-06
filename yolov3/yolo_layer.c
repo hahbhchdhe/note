@@ -182,7 +182,7 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
 void delta_yolo_class(float *output, float *delta, int index, int class_id, int classes, int stride, float *avg_cat, int focal_loss)
 {
     int n;
-    // 参考公式（6），已经有梯度，就只计算此类
+    // 参考公式（6）公式在https://blog.csdn.net/jmu201521121021/article/details/86658163中，已经有梯度，就只计算此类
     if (delta[index + stride*class_id]){
         delta[index + stride*class_id] = 1 - output[index + stride*class_id];
         if(avg_cat) *avg_cat += output[index + stride*class_id];
