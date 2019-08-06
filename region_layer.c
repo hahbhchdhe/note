@@ -32,7 +32,7 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     l.classes = classes;//有多少物体类别
     l.coords = coords;
     l.cost = calloc(1, sizeof(float));//< 目标函数值，为单精度浮点型指针，calloc(n,size):在内存的动态存储区中分配n个长度为size的连续空间，函数返回一个指向分配起始地址的指针
-    l.biases = calloc(n*2, sizeof(float));
+    l.biases = calloc(n*2, sizeof(float));//l.biases就是配置文件里的那些由聚类计算出的anchors的长宽
     l.bias_updates = calloc(n*2, sizeof(float));
     l.outputs = h*w*n*(classes + coords + 1);//输出 feature map 大小,e.g. whole boxes 13*13*5*(20+4+1) 
     l.inputs = l.outputs;
