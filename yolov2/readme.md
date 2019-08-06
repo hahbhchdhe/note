@@ -685,12 +685,38 @@ float train_network_datum_gpu(network net)
 
     net.train = 1;
     //前向反向传播
-    forward_network_gpu(net);
+    forward_network_gpu(net);//1.3.3.2.1.1
     backward_network_gpu(net);
 
     float error = *net.cost;//网络代价 
     if (((*net.seen) / net.batch) % net.subdivisions == 0) update_network_gpu(net);//更新网络  
 
     return error;
+}
+```
+###### 1.3.3.2.1.1 network.c->forward_network(network net, network_state state) [alexeyAB版代码]
+``` c
+void forward_network(network net, network_state state)
+{
+    state.workspace = net.workspace;
+    int i;
+    for(i = 0; i < net.n; ++i){
+        state.index = i;
+        layer l = net.layers[i];
+        //如果delta不为零，那么就把所有的输入值输入乘一个系数，用float *delta指针指向它
+        if(l.delta){
+            scal_cpu(l.outputs * l.batch, 0, l.delta, 1);
+        }
+        //从这里开始我们可以一层一层分析了，重复的层就不再分析了，顺序如下：
+        //[convolutional]
+        //[maxpool]
+        //[local]
+        //[dropout]
+        //[connected]
+        //[detection]或[region]或[yolo]
+        l.forward(l, state);//每种层的源代码中会定义相应前传函数如convolutional_layer.c中定义l.forward = forward_convolutional_layer;
+	//其中 im2col_ongpu 直接将feature map和输入图像矩阵拉成列向量计算 
+        state.input = l.output;
+    }
 }
 ```
