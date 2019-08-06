@@ -364,6 +364,8 @@ void forward_region_layer(const layer l, network net)
                     }
                     /********************2.region loss***********************/
                     //net.seen 已训练样本的个数，记录网络看了多少张图片了
+		    //前12800张训练图片，为了让预测box尽快学到anchor box的形状，
+			//直接把truth中的(x,y,w,h)设置成anchor box的坐标，将预测box和anchor box的差值存入到l.delta中。
                     //如果当前cell没有目标物体（即在这一块没有ground truth落入），将当前anchor的位置和大小当作“ground truth”-a
                     //将网络预测出的预测位置和a进行相减求误差，配以scale=0.01的权重计算损失，主要目的是为了在模型训练的前期更加稳定
                     /***Also, in every image many grid cells do not contain any object. 
@@ -422,7 +424,10 @@ void forward_region_layer(const layer l, network net)
                 //printf("pred: (%f, %f) %f x %f\n", pred.x, pred.y, pred.w, pred.h);
                 pred.x = 0;
                 pred.y = 0;//为了方便计算 iou，上面把 ground truth box 和 pred box 都平移到中心坐标为（0,0）来计算 ，也即去除中心偏移带来的影响
-                float iou = box_iou(pred, truth_shift);
+                //如果l.bias_match为真的话,那这里就不是拿5个anchor box与
+		//cell(i,j)位置的truth box计算iou,选出最优anchor box,而是
+		//会使用该anchor的预测box计算与真实box的误差
+	        float iou = box_iou(pred, truth_shift);
                 if (iou > best_iou){
                     best_iou = iou;
                     best_n = n;// 最优iou对应的anchor索引，然后使用该anchor预测的predict box计算与真实box的误差
