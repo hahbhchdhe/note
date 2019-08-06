@@ -34,7 +34,7 @@ layer make_region_layer(int batch, int w, int h, int n, int classes, int coords)
     l.cost = calloc(1, sizeof(float));//< 目标函数值，为单精度浮点型指针，calloc(n,size):在内存的动态存储区中分配n个长度为size的连续空间，函数返回一个指向分配起始地址的指针
     l.biases = calloc(n*2, sizeof(float));//l.biases就是配置文件里的那些由聚类计算出的anchors的长宽
     l.bias_updates = calloc(n*2, sizeof(float));
-    l.outputs = h*w*n*(classes + coords + 1);//输出 feature map 大小,e.g. whole boxes 13*13*5*(20+4+1) 
+    l.outputs = h*w*n*(classes + coords + 1);//输出 feature map 大小,e.g. whole boxes 13*13*5*(20+4+1)仅是一张图最终feature map的元素个数
     l.inputs = l.outputs;
     l.truths = 30*(l.coords + 1);// 一张图片含有的truth box参数的个数（30表示一张图片最多有30个ground truth box，写死的，实际上每张图片可能
 	//并没有30个真实矩形框，也能没有这么多参数，但为了保持一致性，还是会留着这么大的存储空间，只是其中的值为空而已.）
@@ -197,19 +197,31 @@ void forward_region_layer(const layer l, network net)
 {//这个函数就是前馈计算损失函数的
     int i,j,b,t,n;
     //参见network.c，每次执行前馈时，都把 net.input 指向当前层的输出，memcpy(void *dest, void *src, unsigned int count);
+	// 将net.input中的元素全部拷贝至l.output中
     memcpy(l.output, net.input, l.outputs*l.batch*sizeof(float));//把最后的卷积结果拷贝过来
-
+/// 这个#ifndef预编译指令没有必要用的，因为forward_region_layer()函数本身就对应没有定义gpu版的，
+    // 所以肯定会执行其中的语句,
+    /// 其中的语句的作用是为了计算region_layer层的输出l.output
 #ifndef GPU
     //把所有的x，y，confidence使用逻辑斯蒂函数映射到（0,1）
-    for (b = 0; b < l.batch; ++b){//batch
+    for (b = 0; b < l.batch; ++b){/// 遍历batch中的每张图片（l.output含有整个batch训练图片对应的输出）
         for(n = 0; n < l.n; ++n){//boxes
+            // 获取 某一中段首个x的地址（中段的含义参考entry_idnex()函数的注释），此处仅用两层循环处理所有的输入，直观上应该需要四层的，
+            /// 即还需要两层遍历l.w和l.h（遍历每一个网格），但实际上并不需要，因为每次循环，其都会处理一个中段内某一小段的数据，这一小段数据
+            /// 就包含所有网格的数据。比如处理第1个中段内所有x和y（分别有l.w*l.h个x和y）.
+            //具体实现见注1
             int index = entry_index(l, b, n*l.w*l.h, 0);//定位bth batch nth box's x,y 的数组索引
+	    // 注意第二个参数是2*l.w*l.h，也就是从index+l.output处开始，对之后2*l.w*l.h个元素进行logistic激活函数处理，
+           //只对tx,ty作激活处理,不对tw,th作激活,原因?
             activate_array(l.output + index, 2*l.w*l.h, LOGISTIC);
+		// 和上面一样，此处是获取一个中段内首个自信度信息c值的地址，
+		//而后对该中段内所有的c值（该中段内共有l.w*l.h个c值）进行logistic激活函数处理
             index = entry_index(l, b, n*l.w*l.h, 4);
             if(!l.background) activate_array(l.output + index,   l.w*l.h, LOGISTIC);
         }
     }
     //下面是计算class概率的两种方式，根据设置选其中一个
+	// 这里只有用到tree格式训练的数据才会调用,一般yolov2不调用,即l.softmax_tree==0
     if (l.softmax_tree){
         int i;
         int count = 5;
@@ -219,32 +231,69 @@ void forward_region_layer(const layer l, network net)
             count += group_size;
         }
     } else if (l.softmax){
+	    //获取l.output中首个类别概率C1的地址，
+        // 而后对l.output中所有的类别概率（共有l.batch*l.n*l.w*l.h*l.classes个）进行softmax函数处理,
         int index = entry_index(l, 0, 0, l.coords + !l.background);//apply softmax to n classes scores
-        //通过softmax_cpu函数(in blas.c),计算softmax to each batches' each boxes' position's softmax
+    //通过softmax_cpu函数(in blas.c),计算softmax to each batches' each boxes' position's softmax
+	// net.input+index为region_layer的输入（加上索引偏移量index）
+        /// l.classes-->n，物体种类数，对应softmax_cpu()中输入参数n；
+        /// l.batch*l.n-->batch，一个batch的图片张数乘以每个网格预测的矩形框数，得到值可以这么理解：所有batch数据（net.input）可以分成的中段的总段数，
+        /// 该参数对应softmax_cpu()中输入参数batch；
+        /// l.inputs/l.n-->batch_offset，注意l.inputs仅是一张训练图片输入到region_layer的元素个数，l.inputs/l.n得到的值实际是一个小段的元素个数
+        /// （即所有网格中某个矩形框的所有参数个数）,对应softmax_cpu()中输入参数batch_offset参数；
+        /// l.w*l.h-->groups，对应softmax_cpu()中输入参数groups;
+        /// softmax_cpu()中输入参数group_offset值恒为1；
+        /// l.w*l.h-->stride，对应softmax_cpu()中输入参数stride;
+        /// softmax_cpu()中输入参数temp的值恒为1；
+        /// l.output+index为region_layer的输出（同样加上索引偏移量index，region_layer的输入与输出元素一一对应）；
+
+        /// 详细说一下这里的过程（对比着softmax_cpu()及其调用的softmax()函数来说明）：
+        // softmax_cpu()中的第一层for循环遍历了batch次，即遍历了所有中段；
+        /// 第二层循环遍历了groups次，也即l.w*l.h次，实际上遍历了所有网格；
+        // 而后每次调用softmax()实际上会处理一个网格某个矩形框的所有类别概率，因此可以在
+        /// softmax()函数中看到，遍历的次数为n，也即l.classes的值；在softmax()函数中，
+        // 用上了跨度stride，其值为l.w*l.h，之所以用到跨度，是因为net.input
+        /// 和l.output的存储方式，详见entry_index()函数的注释，由于每次调用softmax()，
+        // 需要处理一个矩形框所有类别的概率，这些概率值都是分开存储的，间隔
+        /// 就是stride=l.w*l.h。
+        // 这样，softmax_cpu()的两层循环以及softmax()中遍历的n次合起来就会处理得到
+        // l.output中所有l.batch*l.n*l.w*l.h*l.classes个
+        /// 概率类别值。（此处提到的中段，小段等名词都需参考entry_index()的注释，尤其是l.output数据的存储方式，
+        // 只有熟悉了此处才能理解好，另外再次强调一下，
+        /// region_layer的输入和输出元素个数是一样的，一一对应，因此其存储方式也是一样的）
         softmax_cpu(net.input + index, l.classes + l.background, l.batch*l.n, l.inputs/l.n, l.w*l.h, 1, l.w*l.h, 1, l.output + index);
     }
 #endif
-    memset(l.delta, 0, l.outputs * l.batch * sizeof(float));//分配内存并初始化梯度,梯度清零
+    memset(l.delta, 0, l.outputs * l.batch * sizeof(float));//分配内存并初始化梯度,梯度清零// 敏感度图清零
     //（memset将l.delta指向内存中的后l.outputs * l.batch * sizeof(float)个字节的内容全部设置为0）
-    if(!net.train) return;
+    if(!net.train) return;c// 如果不是训练过程，则返回不再执行下面的语句（前向推理即检测过程也会调用这个函数，这时就不需要执行下面训练时才会用到的语句了）
     float avg_iou = 0;//平均 IOU
     float recall = 0;//平均召回率
     float avg_cat = 0;// 平均的类别辨识率
     float avg_obj = 0;//有物体的 predict平均
-    float avg_anyobj = 0;//所有predict 平均 indicate all boxes having objects' probability
+    float avg_anyobj = 0;///< 一张训练图片所有预测矩形框的平均自信度（矩形框中含有物体的概率），该参数没有实际用处，仅用于输出打印
     int count = 0; // 该batch内检测的target数
     int class_count = 0;
     *(l.cost) = 0;
     for (b = 0; b < l.batch; ++b) {// 遍历batch内数据
-        if(l.softmax_tree){//计算softmax_tree形式下的 loss-begin
+        if(l.softmax_tree){//计算softmax_tree形式下的 loss-begin//yolov2 不执行
             int onlyclass = 0;
             for(t = 0; t < 30; ++t){
 		    /// 通过移位来获取每一个真实矩形框的信息，net.truth存储了网络吞入的所有图片的真实矩形框信息（一次吞入一个batch的训练图片），
 		/// net.truth作为这一个大数组的首地址，l.truths参数是每一张图片含有的真实值参数个数（可参考layer.h中的truths参数中的注释），
 		/// b是batch中已经处理完图片的图片的张数，l.coords + 1是每个真实矩形框需要5个参数值（也即每条矩形框真值有5个参数），t是本张图片已经处理
 		/// 过的矩形框的个数（每张图片最多处理30张图片），明白了上面的参数之后对于下面的移位获取对应矩形框真实值的代码就不难了。
-                box truth = float_to_box(net.truth + t*(l.coords + 1) + b*l.truths, 1);
+		    
+                 // net.truth存储格式：x,y,w,h,c,x,y,w,h,c,....
+		box truth = float_to_box(net.truth + t*(l.coords + 1) + b*l.truths, 1); 
+		    
+		/// 这个if语句是用来判断一下是否有读到真实矩形框值（每个矩形框有5个参数,float_to_box只读取其中的4个定位参数，
+                /// 只要验证x的值不为0,那肯定是4个参数值都读取到了，要么全部读取到了，要么一个也没有），另外，因为程序中写死了每张图片处理30个矩形框，
+                /// 那么有些图片没有这么多矩形框，就会出现没有读到的情况。
+                //遍历完所有真实box则跳出循环
                 if(!truth.x) break;
+		    /// float_to_box()中没有读取矩形框中包含的物体类别编号的信息，就在此处获取。（darknet中，物体类别标签值为编号，
+                /// 每一个类别都有一个编号值，这些物体具体的字符名称存储在一个文件中，如data/*.names文件，其所在行数就是其编号值）
                 int class = net.truth[t*(l.coords + 1) + b*l.truths + 4];
                 float maxp = 0;
                 int maxi = 0;
@@ -284,6 +333,8 @@ void forward_region_layer(const layer l, network net)
             for (i = 0; i < l.w; ++i) {
                 for (n = 0; n < l.n; ++n) {// 每个格子会预测 5 个 boxes，因此这里要循环 5 次
                     //对每个box，找其所对应的 ground truth box
+		    /// 根据i,j,n计算该矩形框的索引，实际是矩形框中存储的x参数在l.output中的索引，矩形框中包含多个参数，x是其存储的首个参数，
+                    /// 所以也可以说是获取该矩形框的首地址。更为详细的注释，参考entry_index()的注释。
                     int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0); //带入 entry_index, 由output tensor的存储格式可以知道这里是第n个anchor在(i,j)上对应box的首地址
                     //box类型里面存的都是x,y,w,h；l.output数组里面存的是tx,ty,th,tw
                     box pred = get_region_box(l.output, l.biases, n, box_index, i, j, l.w, l.h, l.w*l.h);// 在cell（i，j）上相对于anchor n的预测结果， 相对于feature map的值
@@ -405,6 +456,9 @@ void forward_region_layer(const layer l, network net)
             }
             /*******************5.类别回归的 loss************************/
             int class = net.truth[t*(l.coords + 1) + b*l.truths + l.coords];// 真实类别
+		/// 参考layer.h中关于map的注释：将coco数据集的物体类别编号，变换至在联合9k数据集中的物体类别编号，
+            /// 如果l.map不为NULL，说明使用了yolo9000检测模型，其他模型不用这个参数（没有联合多个数据集训练），
+            /// 目前只有yolo9000.cfg中设置了map文件所在路径
             if (l.map) class = l.map[class];//不执行
 		// 获得预测的 class 的 index
             int class_index = entry_index(l, b, best_n*l.w*l.h + j*l.w + i, l.coords + 1);//预测的class向量首地址
