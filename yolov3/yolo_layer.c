@@ -121,6 +121,7 @@ box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw
     // y` = t.y * lh - i;   // y = ln(y`/(1-y`))   // y - output of previous conv-layer
                             // w = ln(t.w * net.w / anchors_w); // w - output of previous conv-layer
                             // h = ln(t.h * net.h / anchors_h); // h - output of previous conv-layer
+    //(w,h) 输入图片尺寸 (lw,lh)当前特征图尺寸
     b.x = (i + x[index + 0*stride]) / lw;
     b.y = (j + x[index + 1*stride]) / lh;
     b.w = exp(x[index + 2*stride]) * biases[2*n]   / w;
@@ -135,16 +136,16 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
     // j - step in layer height
     //  Returns a box in absolute coordinates
     box pred = get_yolo_box(x, biases, n, index, i, j, lw, lh, w, h, stride);
-    all_ious.iou = box_iou(pred, truth);
+    all_ious.iou = box_iou(pred, truth);// 计算IOU
     all_ious.giou = box_giou(pred, truth);
     // avoid nan in dx_box_iou
     if (pred.w == 0) { pred.w = 1.0; }
     if (pred.h == 0) { pred.h = 1.0; }
     if (iou_loss == MSE)    // old loss
     {
-        float tx = (truth.x*lw - i);
+        float tx = (truth.x*lw - i);// groud truth 相对于框左上角坐标
         float ty = (truth.y*lh - j);
-        float tw = log(truth.w*w / biases[2 * n]);
+        float tw = log(truth.w*w / biases[2 * n]);// 因为bw = pw*exp tw.所以 tw = log(bw/w)
         float th = log(truth.h*h / biases[2 * n + 1]);
 
         delta[index + 0 * stride] = scale * (tx - x[index + 0 * stride]);
@@ -181,6 +182,7 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
 void delta_yolo_class(float *output, float *delta, int index, int class_id, int classes, int stride, float *avg_cat, int focal_loss)
 {
     int n;
+    // 参考公式（6），已经有梯度，就只计算此类
     if (delta[index + stride*class_id]){
         delta[index + stride*class_id] = 1 - output[index + stride*class_id];
         if(avg_cat) *avg_cat += output[index + stride*class_id];
@@ -209,7 +211,7 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
     else {
         // default
         for (n = 0; n < classes; ++n) {
-            delta[index + stride*n] = ((n == class_id) ? 1 : 0) - output[index + stride*n];
+            delta[index + stride*n] = ((n == class_id) ? 1 : 0) - output[index + stride*n];// 公式（6）
             if (n == class_id && avg_cat) *avg_cat += output[index + stride*n];
         }
     }
@@ -238,6 +240,7 @@ void forward_yolo_layer(const layer l, network_state state)
     memcpy(l.output, state.input, l.outputs*l.batch * sizeof(float));
 
 #ifndef GPU
+    // x,y ,confidence class通过激活函数logistic，公式(2)计算
     for (b = 0; b < l.batch; ++b) {
         for (n = 0; n < l.n; ++n) {
             int index = entry_index(l, b, n*l.w*l.h, 0);
@@ -248,9 +251,9 @@ void forward_yolo_layer(const layer l, network_state state)
         }
     }
 #endif
-
+    // 初始化梯度
     memset(l.delta, 0, l.outputs * l.batch * sizeof(float));
-    if (!state.train) return;
+    if (!state.train) return;//不做训练时,直接退出,以下都是训练代码
     //float avg_iou = 0;
     float tot_iou = 0;
     float tot_giou = 0;
@@ -264,49 +267,68 @@ void forward_yolo_layer(const layer l, network_state state)
     int count = 0;
     int class_count = 0;
     *(l.cost) = 0;
+    // 下面四个for循环是依次取n个预测的box的 x，y, w,h,confidence,class，然后依次和所有groud true 计算IOU，取IOU最大的groud true.
     for (b = 0; b < l.batch; ++b) {
         for (j = 0; j < l.h; ++j) {
             for (i = 0; i < l.w; ++i) {
-                for (n = 0; n < l.n; ++n) {
-                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);
+                for (n = 0; n < l.n; ++n) {//n为anchor数量
+                    //内存布局: batch-anchor-xoffset-yoffset-w-h-objectness-classid
+                    //xoffset,yoffset,bw,bh,objectness,classid的尺寸都是l.w * l.h
+                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);// 取pre box的索引
+                    //(i,j) 对应的第l.mask[n]个anchor的预测结果//  获取pre box的x,y confidence , class
                     box pred = get_yolo_box(l.output, l.biases, l.mask[n], box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.w*l.h);
                     float best_iou = 0;
-                    int best_t = 0;
-                    for (t = 0; t < l.max_boxes; ++t) {
+                    int best_t = 0;// 和pre有最大IOU的groud truth的索引
+                    //遍历图中所有groundtruth object ,找出和pred重合度最高的一个object
+                    for (t = 0; t < l.max_boxes; ++t) {//max_boxes: cfg中配置,默认90,单个图片中目标个数最大值
                         box truth = float_to_box_stride(state.truth + t*(4 + 1) + b*l.truths, 1);
-                        int class_id = state.truth[t*(4 + 1) + b*l.truths + 4];
+                        int class_id = state.truth[t*(4 + 1) + b*l.truths + 4]; //获得第t个groundtruth objec的类别
                         if (class_id >= l.classes) {
                             printf(" Warning: in txt-labels class_id=%d >= classes=%d in cfg-file. In txt-labels class_id should be [from 0 to %d] \n", class_id, l.classes, l.classes - 1);
                             printf(" truth.x = %f, truth.y = %f, truth.w = %f, truth.h = %f, class_id = %d \n", truth.x, truth.y, truth.w, truth.h, class_id);
                             getchar();
                             continue; // if label contains class_id more than number of classes in the cfg-file
                         }
-                        if (!truth.x) break;  // continue;
-                        float iou = box_iou(pred, truth);
+                        if (!truth.x) break;  // continue;//不允许groundtruth的中心点为0!!
+                        float iou = box_iou(pred, truth);//计算iou,注意(box.x,box.y)是中心点位置
                         if (iou > best_iou) {
                             best_iou = iou;
                             best_t = t;
                         }
                     }
-                    int obj_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 4);
-                    avg_anyobj += l.output[obj_index];
-                    l.delta[obj_index] = l.cls_normalizer * (0 - l.output[obj_index]);
+                   
+                    int obj_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 4);//读取预测的objectness索引
+                    avg_anyobj += l.output[obj_index];//读取预测的objectness值,avg_anyobj训练状态检测量
+                    /*
+                    objectness 学习
+                    iou < l.ignore_thresh: 作为负样本
+                    iou > l.truth_thresh: 作为正样本
+                    其他:不参与训练
+                    */
+                     // 计算 confidence的偏差
+                    l.delta[obj_index] = l.cls_normalizer * (0 - l.output[obj_index]);//默认作为负样本,目标objectness=0,误差设置为0 - l.output[obj_index]
+                   // 大于IOU设置的阈值 confidence梯度设为0
                     if (best_iou > l.ignore_thresh) {
-                        l.delta[obj_index] = 0;
+                        l.delta[obj_index] = 0;//iou较大,不能作为负样本, 清除误差
                     }
+                    // yolov3这段代码不会执行，因为 l.truth_thresh值为1
                     if (best_iou > l.truth_thresh) {
-                        l.delta[obj_index] = l.cls_normalizer * (1 - l.output[obj_index]);
+                        l.delta[obj_index] = l.cls_normalizer * (1 - l.output[obj_index]);//iou足够大,是正样本,目标是objectness=1, 梯度设置为1 - l.output[obj_index]
 
-                        int class_id = state.truth[best_t*(4 + 1) + b*l.truths + 4];
+                        int class_id = state.truth[best_t*(4 + 1) + b*l.truths + 4];//groundtruth classid
                         if (l.map) class_id = l.map[class_id];
-                        int class_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 4 + 1);
+                        int class_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 4 + 1);//预测的classid
+                        //计算classid的误差(one-hot-encoding,计算方法和objectness类似,但这里还支持focal_loss)
                         delta_yolo_class(l.output, l.delta, class_index, class_id, l.classes, l.w*l.h, 0, l.focal_loss);
                         box truth = float_to_box_stride(state.truth + best_t*(4 + 1) + b*l.truths, 1);
+                        //计算box误差 
                         delta_yolo_box(truth, l.output, l.biases, l.mask[n], box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.delta, (2 - truth.w*truth.h), l.w*l.h, l.iou_normalizer, l.iou_loss);
                     }
                 }
             }
         }
+        // box,class 的梯度，只计算groud truth对应的预测框的梯： 
+        //先计算groud truth和所有anchor iou，然后选最大IOU的索引，若这个索引在mask里，计算梯度和loss.
         for (t = 0; t < l.max_boxes; ++t) {
             box truth = float_to_box_stride(state.truth + t*(4 + 1) + b*l.truths, 1);
             if (truth.x < 0 || truth.y < 0 || truth.x > 1 || truth.y > 1 || truth.w < 0 || truth.h < 0) {
@@ -318,13 +340,13 @@ void forward_yolo_layer(const layer l, network_state state)
             if (!truth.x) break;  // continue;
             float best_iou = 0;
             int best_n = 0;
-            i = (truth.x * l.w);
-            j = (truth.y * l.h);
+            i = (truth.x * l.w);// pre对应中心坐标y
+            j = (truth.y * l.h);// pred 对应中心坐标x
             box truth_shift = truth;
             truth_shift.x = truth_shift.y = 0;
-            for (n = 0; n < l.total; ++n) {
-                box pred = { 0 };
-                pred.w = l.biases[2 * n] / state.net.w;
+            for (n = 0; n < l.total; ++n) {//所有anchor都参与计算iou
+                box pred = { 0 };//中心位置都变成左上角
+                pred.w = l.biases[2 * n] / state.net.w;//按网络输入尺寸归一化
                 pred.h = l.biases[2 * n + 1] / state.net.h;
                 float iou = box_iou(pred, truth_shift);
                 if (iou > best_iou) {
@@ -332,10 +354,11 @@ void forward_yolo_layer(const layer l, network_state state)
                     best_n = n;
                 }
             }
-
-            int mask_n = int_index(l.mask, best_n, l.n);
+           // 判断最好AIOU对应的索引best_n 是否在mask里面，若没有，返回-1
+            int mask_n = int_index(l.mask, best_n, l.n);//只有在mask中指定的anchor进行如下计算
             if (mask_n >= 0) {
                 int box_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 0);
+                //和前面的计算一样,但读取了返回值iou// 计算box梯度
                 ious all_ious = delta_yolo_box(truth, l.output, l.biases, best_n, box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.delta, (2 - truth.w*truth.h), l.w*l.h, l.iou_normalizer, l.iou_loss);
 
                 // range is 0 <= 1
@@ -347,11 +370,14 @@ void forward_yolo_layer(const layer l, network_state state)
 
                 int obj_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4);
                 avg_obj += l.output[obj_index];
+                // 计算梯度，公式(6)，梯度前面要加个”-“号， 1代表是真实标签
                 l.delta[obj_index] = l.cls_normalizer * (1 - l.output[obj_index]);
 
                 int class_id = state.truth[t*(4 + 1) + b*l.truths + 4];
                 if (l.map) class_id = l.map[class_id];
                 int class_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4 + 1);
+                //和前面的计算一样,但读取了一个状态信息avg_cat
+                // 计算类别的梯度
                 delta_yolo_class(l.output, l.delta, class_index, class_id, l.classes, l.w*l.h, &avg_cat, l.focal_loss);
 
                 ++count;
