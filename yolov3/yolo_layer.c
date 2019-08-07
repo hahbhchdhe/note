@@ -1,3 +1,5 @@
+/**********************************************yolov3损失函数************************************************************/
+//参考连接 https://blog.csdn.net/hfq0219/article/details/90141698
 #include "yolo_layer.h"
 #include "activations.h"
 #include "blas.h"
@@ -16,19 +18,21 @@ layer make_yolo_layer(int batch, int w, int h, int n, int total, int *mask, int 
     layer l = { (LAYER_TYPE)0 };
     l.type = YOLO;
 
-    l.n = n;
-    l.total = total;
+    l.n = n;// 这一层用的anchor数量，该层每个 grid 预测的框的个数，yolov3.cfg 为3
+    l.total = total;// 所有的anchor数量
     l.batch = batch;
     l.h = h;
     l.w = w;
-    l.c = n*(classes + 4 + 1);
+    l.c = n*(classes + 4 + 1);///输入和输出相等，yolo 层是最后一层，不需要把输出传递到下一层。
     l.out_w = l.w;
     l.out_h = l.h;
     l.out_c = l.c;
     l.classes = classes;
     l.cost = (float*)calloc(1, sizeof(float));
-    l.biases = (float*)calloc(total * 2, sizeof(float));
-    if(mask) l.mask = mask;
+    l.biases = (float*)calloc(total * 2, sizeof(float));// anchor的具体值
+    // below 具体使用的那几个anchor
+    if(mask) l.mask = mask;//l.mask 里保存了 [yolo] 配置里 “mask = 0,1,2” 的数值
+    //mask和用到第几个先验框有关，取值为0-9。比如，mask_n=1,先验框的宽和高是（biases[2*mask_n],biases[2*mask_n+1]）
     else{
         l.mask = (int*)calloc(n, sizeof(int));
         for(i = 0; i < n; ++i){
@@ -40,10 +44,10 @@ layer make_yolo_layer(int batch, int w, int h, int n, int total, int *mask, int 
     l.inputs = l.outputs;
     l.max_boxes = max_boxes;
     l.truths = l.max_boxes*(4 + 1);    // 90*(4 + 1);
-    l.delta = (float*)calloc(batch * l.outputs, sizeof(float));
+    l.delta = (float*)calloc(batch * l.outputs, sizeof(float));// MSE的差
     l.output = (float*)calloc(batch * l.outputs, sizeof(float));
     for(i = 0; i < total*2; ++i){
-        l.biases[i] = .5;
+        l.biases[i] = .5;//如果未指定 anchors，默认设置为0.5，否则在 ./src/parser.c 里会把 l.biases 的值设为 anchors 的大小
     }
 
     l.forward = forward_yolo_layer;
@@ -112,7 +116,7 @@ void resize_yolo_layer(layer *l, int w, int h)
     l->output_gpu =    cuda_make_array(l->output, l->batch*l->outputs);
 #endif
 }
-
+//获得预测的边界框
 box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, int stride)
 {
     box b;
@@ -121,14 +125,16 @@ box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw
     // y` = t.y * lh - i;   // y = ln(y`/(1-y`))   // y - output of previous conv-layer
                             // w = ln(t.w * net.w / anchors_w); // w - output of previous conv-layer
                             // h = ln(t.h * net.h / anchors_h); // h - output of previous conv-layer
-    //(w,h) 输入图片尺寸 (lw,lh)当前特征图尺寸
-    b.x = (i + x[index + 0*stride]) / lw;
+    //(w,h) 输入图片尺寸 (lw,lh)当前特征图尺寸  b.x, b.y 为全图相对尺寸
+    ////把结果分别利用feature map宽高和输入图宽高做了归一化，这就对应了我刚刚谈到的公式了
+    //虽然b.w和b.h是除以输入图片大小 如416，但这是因为下面的函数中的tw和th用的是w,h=416，x,y都是针对feature map大小的
+    b.x = (i + x[index + 0*stride]) / lw;//x[index + 0*stride]相当于tx
     b.y = (j + x[index + 1*stride]) / lh;
-    b.w = exp(x[index + 2*stride]) * biases[2*n]   / w;
+    b.w = exp(x[index + 2*stride]) * biases[2*n]   / w;//b.w b.h 将显示在结果图像上的目标宽度和高度
     b.h = exp(x[index + 3*stride]) * biases[2*n+1] / h;
     return b;
 }
-
+//计算boundbox的loss
 ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, float *delta, float scale, int stride, float iou_normalizer, IOU_LOSS iou_loss)
 {
     ious all_ious = { 0 };
@@ -147,7 +153,8 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
         float ty = (truth.y*lh - j);
         float tw = log(truth.w*w / biases[2 * n]);// 因为bw = pw*exp tw.所以 tw = log(bw/w)
         float th = log(truth.h*h / biases[2 * n + 1]);
-
+        
+         // scale = 2 - truth.w * truth.h 
         delta[index + 0 * stride] = scale * (tx - x[index + 0 * stride]);
         delta[index + 1 * stride] = scale * (ty - x[index + 1 * stride]);
         delta[index + 2 * stride] = scale * (tw - x[index + 2 * stride]);
@@ -178,12 +185,22 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
 
     return all_ious;
 }
-
+// 计算分类loss
 void delta_yolo_class(float *output, float *delta, int index, int class_id, int classes, int stride, float *avg_cat, int focal_loss)
 {
     int n;
     // 参考公式（6）公式在https://blog.csdn.net/jmu201521121021/article/details/86658163中，已经有梯度，就只计算此类
     if (delta[index + stride*class_id]){
+        /*我们知道，在YOLO_v3中类别损失函数使用的是sigmoid-loss，而不是使用softmax-loss。
+        分类时使用sigmoid损失函数时，由于在使用真值框的中心点计算得到的最后一层feature map上的点位置存在量化误差，
+        feature map上的点只能为整型，因此可能会存在两个靠的很近的真值框中心点计算出的位置在feature map上的坐标点位置是一样的，
+        出现这种情况时，对应的class梯度已经在前一个真值框计算时计算过，而新的真值框计算class梯度时，
+        没有必要将原来的class_delta全部覆盖掉，只需要更新对应class label对应的sigmoid梯度即可，
+        因此这样的操作方式可能导致一个目标框的几个类别概率都比较大（即多label）。
+        
+        //当然，如果计算分类损失时使用softmax-loss就没必要这样做了。因为softmax计算出的类别概率是互斥的，
+        不像使用sigmoid计算分类损失，因为每个类别都使用一个sigmoid计算其分类损失，他们的类别不是互斥的，
+       因此可以使用代码中描述的操作方式，使用softmax-loss计算分类损失梯度时，第一部分代码可以直接忽略，让新的目标框类别梯度覆盖原来的即可。*/
         delta[index + stride*class_id] = 1 - output[index + stride*class_id];
         if(avg_cat) *avg_cat += output[index + stride*class_id];
         return;
@@ -210,7 +227,7 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
     }
     else {
         // default
-        for (n = 0; n < classes; ++n) {
+        for (n = 0; n < classes; ++n) {//对所有类别，如果预测正确，则误差为 1-predict，否则为 0-predict
             delta[index + stride*n] = ((n == class_id) ? 1 : 0) - output[index + stride*n];// 公式（6）
             if (n == class_id && avg_cat) *avg_cat += output[index + stride*n];
         }
@@ -219,8 +236,8 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
 
 static int entry_index(layer l, int batch, int location, int entry)
 {
-    int n =   location / (l.w*l.h);
-    int loc = location % (l.w*l.h);
+    int n =   location / (l.w*l.h);//第几个框，每个 grid 有3个框
+    int loc = location % (l.w*l.h);//第几个 grid
     return batch*l.outputs + n*l.w*l.h*(4+l.classes+1) + entry*l.w*l.h + loc;
 }
 
@@ -233,20 +250,28 @@ static box float_to_box_stride(float *f, int stride)
     b.h = f[3 * stride];
     return b;
 }
+/****前向
+*****两个循环。
 
+
+*****首先，网络的每个输出的bbox都对比groudtruth，如果IOU > ignore则不参与训练，进一步的，大于truth则计算loss，参与训练，但是cfg文件中这个值设置的是1,所以应该就是忽略后面这个进一步的了。
+
+*****第二个循环，对每个目标，查找最合适的anchor，如果本层负责这个尺寸的anchor，就计算对应的各loss。否则忽略。*/
 void forward_yolo_layer(const layer l, network_state state)
 {
     int i, j, b, t, n;
-    memcpy(l.output, state.input, l.outputs*l.batch * sizeof(float));
+    memcpy(l.output, state.input, l.outputs*l.batch * sizeof(float));//将层输入直接拷贝到层输出
 
 #ifndef GPU
     // x,y ,confidence class通过激活函数logistic，公式(2)计算
     for (b = 0; b < l.batch; ++b) {
         for (n = 0; n < l.n; ++n) {
             int index = entry_index(l, b, n*l.w*l.h, 0);
+            // 对 tx, ty进行logistic变换
             activate_array(l.output + index, 2 * l.w*l.h, LOGISTIC);        // x,y,
             scal_add_cpu(2 * l.w*l.h, l.scale_x_y, -0.5*(l.scale_x_y - 1), l.output + index, 1);    // scale x,y
             index = entry_index(l, b, n*l.w*l.h, 4);
+            // 对confidence和类别进行logistic变换
             activate_array(l.output + index, (1 + l.classes)*l.w*l.h, LOGISTIC);
         }
     }
@@ -274,8 +299,8 @@ void forward_yolo_layer(const layer l, network_state state)
                 for (n = 0; n < l.n; ++n) {//n为anchor数量
                     //内存布局: batch-anchor-xoffset-yoffset-w-h-objectness-classid
                     //xoffset,yoffset,bw,bh,objectness,classid的尺寸都是l.w * l.h
-                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);// 取pre box的索引
-                    //(i,j) 对应的第l.mask[n]个anchor的预测结果//  获取pre box的x,y confidence , class
+                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);//获得预测  box 的起始位置，即 box.x 的位置
+                    //(i,j) 对应的第l.mask[n]个anchor的预测结果//  获取pre box的x,y confidence , class //获得该位置的 box 保存到 pred
                     box pred = get_yolo_box(l.output, l.biases, l.mask[n], box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.w*l.h);
                     float best_iou = 0;
                     int best_t = 0;// 和pre有最大IOU的groud truth的索引
@@ -355,10 +380,13 @@ void forward_yolo_layer(const layer l, network_state state)
                 }
             }
            // 判断最好AIOU对应的索引best_n 是否在mask里面，若没有，返回-1
+           // 如果最合适的anchor由本层负责预测（由mask来决定）执行
+            //这个函数判断上面找到的 anchor 是否是该层要预测的
             int mask_n = int_index(l.mask, best_n, l.n);//只有在mask中指定的anchor进行如下计算
-            if (mask_n >= 0) {
+            if (mask_n >= 0) {//如果该 anchor 是该层要预测的
+                //获得该 anchor 在层输出中对应的 box 位置
                 int box_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 0);
-                //和前面的计算一样,但读取了返回值iou// 计算box梯度
+                //和前面的计算一样,但读取了返回值iou // 计算box梯度 //计算 box 与 gt 的误差
                 ious all_ious = delta_yolo_box(truth, l.output, l.biases, best_n, box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.delta, (2 - truth.w*truth.h), l.w*l.h, l.iou_normalizer, l.iou_loss);
 
                 // range is 0 <= 1
@@ -367,15 +395,15 @@ void forward_yolo_layer(const layer l, network_state state)
                 // range is -1 <= giou <= 1
                 tot_giou += all_ious.giou;
                 tot_giou_loss += 1 - all_ious.giou;
-
+                //获得该 box 的 confident 的位置
                 int obj_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4);
                 avg_obj += l.output[obj_index];
-                // 计算梯度，公式(6)，梯度前面要加个”-“号， 1代表是真实标签
+                // 计算梯度，公式(6)，梯度前面要加个”-“号， 1代表是真实标签 //该位置应该有正样本，所以误差为 1-predict
                 l.delta[obj_index] = l.cls_normalizer * (1 - l.output[obj_index]);
-
+                   //获得 gt 的真实类别
                 int class_id = state.truth[t*(4 + 1) + b*l.truths + 4];
                 if (l.map) class_id = l.map[class_id];
-                int class_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4 + 1);
+                int class_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4 + 1);//获得 box 类别的起始位置0（80种类别）
                 //和前面的计算一样,但读取了一个状态信息avg_cat
                 // 计算类别的梯度
                 delta_yolo_class(l.output, l.delta, class_index, class_id, l.classes, l.w*l.h, &avg_cat, l.focal_loss);
@@ -396,6 +424,7 @@ void forward_yolo_layer(const layer l, network_state state)
     float avg_iou_loss = 0;
     // gIOU loss + MSE (objectness) loss
     if (l.iou_loss == MSE) {
+        //计算损失函数，cost=sum(l.delta*l.delta)
         *(l.cost) = pow(mag_array(l.delta, l.outputs * l.batch), 2);
     }
     else {
@@ -434,16 +463,23 @@ void forward_yolo_layer(const layer l, network_state state)
 
 void backward_yolo_layer(const layer l, network_state state)
 {
-   axpy_cpu(l.batch*l.inputs, 1, l.delta, 1, state.delta, 1);
+   axpy_cpu(l.batch*l.inputs, 1, l.delta, 1, state.delta, 1); //直接把 l.delta 拷贝给上一层的 delta。注意 net.delta 指向 prev_layer.delta。
 }
-
+//调整预测 box 中心和大小
+//得到除以了W,H后的bx,by,bw,bh，如果将这4个值分别乘以输入网络的图片的宽和高（如416*416）就可以得到bbox相对于坐标系(416*416)位置和大小了。
+//但还要将相对于输入网络图片(416x416)的边框属性变换成原图按照纵横比不变进行缩放后的区域的坐标(416*312)。
 void correct_yolo_boxes(detection *dets, int n, int w, int h, int netw, int neth, int relative, int letter)
-{
+{//w 和 h 是输入图片的尺寸，netw 和 neth 是网络输入尺寸
     int i;
+    // 此处new_w表示输入图片经压缩后在网络输入大小的letter_box中的width,new_h表示在letter_box中的height,
+	// 以1280*720的输入图片为例，在进行letter_box的过程中，原图经resize后的width为416， 那么resize后的对应height为720*416/1280,
+	//所以height为234，而超过234的上下空余部分在作为网络输入之前填充了128，new_h=234
+    int new_w=0;
     int new_w=0;
     int new_h=0;
     if (letter) {
-        if (((float)netw / w) < ((float)neth / h)) {
+        if (((float)netw / w) < ((float)neth / h)) {//新图片尺寸
+            // 如果w>h说明resize的时候是以width/图像的width为resize比例的，先得到中间图的width,再根据比例得到height
             new_w = netw;
             new_h = (h * netw) / w;
         }
@@ -456,8 +492,12 @@ void correct_yolo_boxes(detection *dets, int n, int w, int h, int netw, int neth
         new_w = netw;
         new_h = neth;
     }
-    for (i = 0; i < n; ++i){
+    for (i = 0; i < n; ++i){//调整 box 相对新图片尺寸的位置
         box b = dets[i].bbox;
+        // 此处的公式很不好理解还是接着上面的例子，现有new_w=416,new_h=234,因为resize是以w为长边压缩的
+		// 所以x相对于width的比例不变，而b.y表示y相对于图像高度的比例，在进行这一步的转化之前，b.y表示
+		// 的是预测框的y坐标相对于网络height的比值，要转化到相对于letter_box中图像的height的比值时，需要先
+		// 计算出y在letter_box中的相对坐标，即(b.y - (neth - new_h)/2./neth)，再除以比例
         b.x =  (b.x - (netw - new_w)/2./netw) / ((float)new_w/netw);
         b.y =  (b.y - (neth - new_h)/2./neth) / ((float)new_h/neth);
         b.w *= (float)netw/new_w;
@@ -471,16 +511,16 @@ void correct_yolo_boxes(detection *dets, int n, int w, int h, int netw, int neth
         dets[i].bbox = b;
     }
 }
-
+//预测输出中置信度超过阈值的 box 个数
 int yolo_num_detections(layer l, float thresh)
 {
     int i, n;
     int count = 0;
     for (i = 0; i < l.w*l.h; ++i){
         for(n = 0; n < l.n; ++n){
-            int obj_index  = entry_index(l, 0, n*l.w*l.h + i, 4);
+            int obj_index  = entry_index(l, 0, n*l.w*l.h + i, 4);//获得置信度偏移位置
             if(l.output[obj_index] > thresh){
-                ++count;
+                ++count;//置信度超过阈值
             }
         }
     }
@@ -512,7 +552,7 @@ void avg_flipped_yolo(layer l)
         l.output[i] = (l.output[i] + flip[i])/2.;
     }
 }
-
+//获得预测输出中超过阈值的 box
 int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh, int *map, int relative, detection *dets, int letter)
 {
     //printf("\n l.batch = %d, l.w = %d, l.h = %d, l.n = %d \n", l.batch, l.w, l.h, l.n);
@@ -525,7 +565,7 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
         int col = i % l.w;
         for(n = 0; n < l.n; ++n){
             int obj_index  = entry_index(l, 0, n*l.w*l.h + i, 4);
-            float objectness = predictions[obj_index];
+            float objectness = predictions[obj_index];//置信度
             //if(objectness <= thresh) continue;    // incorrect behavior for Nan values
             if (objectness > thresh) {
                 //printf("\n objectness = %f, thresh = %f, i = %d, n = %d \n", objectness, thresh, i, n);
