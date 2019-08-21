@@ -265,11 +265,12 @@ void forward_yolo_layer(const layer l, network_state state)
 #ifndef GPU
     // x,y ,confidence class通过激活函数logistic，公式(2)计算
     for (b = 0; b < l.batch; ++b) {
-        for (n = 0; n < l.n; ++n) {
+        for (n = 0; n < l.n; ++n) {//l.n 为一个cell中预测多少个box v3为2个
             int index = entry_index(l, b, n*l.w*l.h, 0);
             // 对 tx, ty进行logistic变换
             activate_array(l.output + index, 2 * l.w*l.h, LOGISTIC);        // x,y,
-            scal_add_cpu(2 * l.w*l.h, l.scale_x_y, -0.5*(l.scale_x_y - 1), l.output + index, 1);    // scale x,y
+             // l.scale_x_y意义暂时不明 https://github.com/AlexeyAB/darknet/issues/3293中有提及
+	    scal_add_cpu(2 * l.w*l.h, l.scale_x_y, -0.5*(l.scale_x_y - 1), l.output + index, 1);   
             index = entry_index(l, b, n*l.w*l.h, 4);
             // 对confidence和类别进行logistic变换
             activate_array(l.output + index, (1 + l.classes)*l.w*l.h, LOGISTIC);
