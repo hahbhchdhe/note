@@ -31,8 +31,9 @@ layer make_yolo_layer(int batch, int w, int h, int n, int total, int *mask, int 
     l.cost = (float*)calloc(1, sizeof(float));
     l.biases = (float*)calloc(total * 2, sizeof(float));// anchor的具体值
     // below 具体使用的那几个anchor
-    if(mask) l.mask = mask;//l.mask 里保存了 [yolo] 配置里 “mask = 0,1,2” 的数值
     //mask和用到第几个先验框有关，取值为0-9。比如，mask_n=1,先验框的宽和高是（biases[2*mask_n],biases[2*mask_n+1]）
+    if(mask) l.mask = mask;//l.mask 里保存了 [yolo] 配置里 “mask = 0,1,2” 的数值
+    //只有当cfg中没有定义mask的数值时才执行下面的else中语句 
     else{
         l.mask = (int*)calloc(n, sizeof(int));
         for(i = 0; i < n; ++i){
@@ -117,6 +118,7 @@ void resize_yolo_layer(layer *l, int w, int h)
 #endif
 }
 //获得预测的边界框
+// box pred = get_yolo_box(l.output, l.biases, l.mask[n], box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.w*l.h)
 box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, int stride)
 {
     box b;
@@ -153,7 +155,7 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
         float ty = (truth.y*lh - j);
         float tw = log(truth.w*w / biases[2 * n]);// 因为bw = pw*exp tw.所以 tw = log(bw/w)
         float th = log(truth.h*h / biases[2 * n + 1]);
-        
+        // square error的求导
          // scale = 2 - truth.w * truth.h 
         delta[index + 0 * stride] = scale * (tx - x[index + 0 * stride]);
         delta[index + 1 * stride] = scale * (ty - x[index + 1 * stride]);
@@ -236,7 +238,7 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
 
 static int entry_index(layer l, int batch, int location, int entry)
 {
-    int n =   location / (l.w*l.h);//第几个框，每个 grid 有3个框
+    int n =   location / (l.w*l.h);//第几个框，v3每个 grid 有3个框
     int loc = location % (l.w*l.h);//第几个 grid
     return batch*l.outputs + n*l.w*l.h*(4+l.classes+1) + entry*l.w*l.h + loc;
 }
@@ -271,7 +273,8 @@ void forward_yolo_layer(const layer l, network_state state)
             activate_array(l.output + index, 2 * l.w*l.h, LOGISTIC);        // x,y,
              // l.scale_x_y意义暂时不明 https://github.com/AlexeyAB/darknet/issues/3293中有提及
 	    scal_add_cpu(2 * l.w*l.h, l.scale_x_y, -0.5*(l.scale_x_y - 1), l.output + index, 1);   
-            index = entry_index(l, b, n*l.w*l.h, 4);
+            //第b张图片中第1个cell中第n+1个box中第5个参数（confidence）的位置索引
+	    index = entry_index(l, b, n*l.w*l.h, 4);
             // 对confidence和类别进行logistic变换
             activate_array(l.output + index, (1 + l.classes)*l.w*l.h, LOGISTIC);
         }
@@ -297,16 +300,17 @@ void forward_yolo_layer(const layer l, network_state state)
     for (b = 0; b < l.batch; ++b) {
         for (j = 0; j < l.h; ++j) {
             for (i = 0; i < l.w; ++i) {
-                for (n = 0; n < l.n; ++n) {//n为anchor数量
+                for (n = 0; n < l.n; ++n) {//n为anchor数量 v3为3
                     //内存布局: batch-anchor-xoffset-yoffset-w-h-objectness-classid
                     //xoffset,yoffset,bw,bh,objectness,classid的尺寸都是l.w * l.h
-                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);//获得预测  box 的起始位置，即 box.x 的位置
-                    //(i,j) 对应的第l.mask[n]个anchor的预测结果//  获取pre box的x,y confidence , class //获得该位置的 box 保存到 pred
+                    int box_index = entry_index(l, b, n*l.w*l.h + j*l.w + i, 0);//获得第b张图中i行j列的cell中第n+1个预测box的起始位置，即 box.x 的位置
+                    //(i,j) 对应的第l.mask[n]个anchor的预测结果//获取pre box的x,y confidence , class //l.mask[n]得到的是选用的预设anchor的编号
                     box pred = get_yolo_box(l.output, l.biases, l.mask[n], box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.w*l.h);
                     float best_iou = 0;
                     int best_t = 0;// 和pre有最大IOU的groud truth的索引
                     //遍历图中所有groundtruth object ,找出和pred重合度最高的一个object
                     for (t = 0; t < l.max_boxes; ++t) {//max_boxes: cfg中配置,默认90,单个图片中目标个数最大值
+			    //获得第b张图片第t个标注框的xywh
                         box truth = float_to_box_stride(state.truth + t*(4 + 1) + b*l.truths, 1);
                         int class_id = state.truth[t*(4 + 1) + b*l.truths + 4]; //获得第t个groundtruth objec的类别
                         if (class_id >= l.classes) {
@@ -383,6 +387,7 @@ void forward_yolo_layer(const layer l, network_state state)
            // 判断最好AIOU对应的索引best_n 是否在mask里面，若没有，返回-1
            // 如果最合适的anchor由本层负责预测（由mask来决定）执行
             //这个函数判断上面找到的 anchor 是否是该层要预测的
+		best_n在[0,8]之间, mask_n取值范围为0，1，2 
             int mask_n = int_index(l.mask, best_n, l.n);//只有在mask中指定的anchor进行如下计算
             if (mask_n >= 0) {//如果该 anchor 是该层要预测的
                 //获得该 anchor 在层输出中对应的 box 位置
@@ -403,7 +408,7 @@ void forward_yolo_layer(const layer l, network_state state)
                 l.delta[obj_index] = l.cls_normalizer * (1 - l.output[obj_index]);
                    //获得 gt 的真实类别
                 int class_id = state.truth[t*(4 + 1) + b*l.truths + 4];
-                if (l.map) class_id = l.map[class_id];
+                if (l.map) class_id = l.map[class_id];//yolo9000
                 int class_index = entry_index(l, b, mask_n*l.w*l.h + j*l.w + i, 4 + 1);//获得 box 类别的起始位置0（80种类别）
                 //和前面的计算一样,但读取了一个状态信息avg_cat
                 // 计算类别的梯度
