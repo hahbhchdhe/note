@@ -267,7 +267,7 @@ void forward_yolo_layer(const layer l, network_state state)
 #ifndef GPU
     // x,y ,confidence class通过激活函数logistic，公式(2)计算
     for (b = 0; b < l.batch; ++b) {
-        for (n = 0; n < l.n; ++n) {//l.n 为一个cell中预测多少个box v3为2个
+        for (n = 0; n < l.n; ++n) {//l.n 为一个cell中预测多少个box v3为3个
             int index = entry_index(l, b, n*l.w*l.h, 0);
             // 对 tx, ty进行logistic变换
             activate_array(l.output + index, 2 * l.w*l.h, LOGISTIC);        // x,y,
@@ -387,7 +387,7 @@ void forward_yolo_layer(const layer l, network_state state)
            // 判断最好AIOU对应的索引best_n 是否在mask里面，若没有，返回-1
            // 如果最合适的anchor由本层负责预测（由mask来决定）执行
             //这个函数判断上面找到的 anchor 是否是该层要预测的
-		best_n在[0,8]之间, mask_n取值范围为0，1，2 
+	    //best_n在[0,8]之间, mask_n取值范围为0，1，2 
             int mask_n = int_index(l.mask, best_n, l.n);//只有在mask中指定的anchor进行如下计算
             if (mask_n >= 0) {//如果该 anchor 是该层要预测的
                 //获得该 anchor 在层输出中对应的 box 位置
