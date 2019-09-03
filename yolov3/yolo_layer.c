@@ -137,6 +137,8 @@ box get_yolo_box(float *x, float *biases, int n, int index, int i, int j, int lw
     return b;
 }
 //计算boundbox的loss
+//ious all_ious = 
+//delta_yolo_box(truth, l.output, l.biases, best_n, box_index, i, j, l.w, l.h, state.net.w, state.net.h, l.delta, (2 - truth.w*truth.h), l.w*l.h, l.iou_normalizer, l.iou_loss);
 ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, float *delta, float scale, int stride, float iou_normalizer, IOU_LOSS iou_loss)
 {
     ious all_ious = { 0 };
@@ -187,6 +189,7 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
 
     return all_ious;
 }
+
 // 计算分类loss
 void delta_yolo_class(float *output, float *delta, int index, int class_id, int classes, int stride, float *avg_cat, int focal_loss)
 {
